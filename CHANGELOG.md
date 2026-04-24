@@ -6,23 +6,17 @@
 
 ## [Unreleased]
 
-### Added
+## [0.1.0] — 2026-04-25
 
-- **Smoke-архетипы контрагентов** (`tests/test_smoke_archetypes.py`, +11 тестов). 10 типовых сценариев через `check_contractor`: чистая юр.лицо / чистый ИП / ликвидирована / банкротство / дисквалифицированный руководитель / массовый адрес / массовый руководитель / no_reporting / крупные исполнительные производства / ФССП CAPTCHA graceful. Разделяемая fixture-factory (`tests/smoke_helpers.py`: `ScenarioResponses` + `mock_scenario` + 10 именованных архетипов + preload-хелперы для SQLite-реестров). Мета-тест гарантирует покрытие всех 4 значений `verdict_action`.
-- **Маркер `py.typed`** (PEP 561) — IDE и mypy теперь увидят type-информацию пакета без установки отдельного typeshed.
-- **PyPI-metadata полировка** в `pyproject.toml`: расширенные keywords (13 штук включая `model-context-protocol`, `due-diligence`, `kyc`, `egrip`, `efrsb`), classifiers уровня Beta с дополнительными Intended Audience (Financial, Legal), `Operating System :: OS Independent`, `Framework :: AsyncIO`, `Natural Language :: Russian`, `Typing :: Typed`, `Programming Language :: Python :: 3 :: Only`. Добавлена секция `[project.urls]` (Homepage / Repository / Issues / Changelog / Documentation). Добавлена секция `[tool.hatch.build.targets.sdist]` с явным include/exclude (tests+.env.example включены, `__pycache__`/`.venv`/`*.sqlite`/coverage исключены).
+**🚀 Опубликован на PyPI**: https://pypi.org/project/atomno-mcp-fns-check/0.1.0/
+**🐙 GitHub**: https://github.com/atomno-labs/mcp-fns-check
 
-### Changed
+### Качество релиза
 
-- **Dependency constraints** ужесточены до MAJOR-lock против breaking changes в будущих версиях: `fastmcp>=3.0.0,<4.0.0` (было `>=0.2.0` — теоретически допускало fastmcp v4 с breaking API), `httpx>=0.27.0,<1.0.0`, `pydantic>=2.6.0,<3.0.0`, `aiosqlite>=0.20.0,<1.0.0`. Пакет установится только на протестированных major-версиях, update до v2/v4 зависимостей — через явный bump в следующих релизах.
-
-### Fixed
-
-- **КРИТИЧНО**: `.gitignore` — anchored `/data/`, `/db/`, `/logs/` (было `data/`, `db/`, `*.db` без anchor). Hatchling при сборке wheel уважает `.gitignore` как VCS-фильтр; неанкеренные правила исключали `src/atomno_mcp_fns_check/data/` (`okved_2_dict.json`, `registries_seed.json`) и `src/atomno_mcp_fns_check/db/` (`cache.py`, `registries.py`) из итогового wheel. Пакет после `pip install` из PyPI выбрасывал бы `ImportError` на импорте `from .db.cache import SQLiteCache` в `context.py`. Исправление верифицировано через `python -m build` + анализ содержимого wheel-артефакта + smoke-install в чистом venv.
-- `.gitignore` — добавлены `*.sqlite`, `*.sqlite-journal`, `atomno_mcp_fns_check_cache*` (runtime создаёт именно `.sqlite`, а не `.sqlite3` — прежний pattern не срабатывал, пользователь наивно зафиксил бы локальную БД в git).
-- Badge `tests` в README обновлён с 236 на 247.
-
-## [0.1.0] — 2026-04-24
+- **247 тестов**, **85% coverage** (`pytest --cov` на полном наборе).
+- Все внешние HTTP замоканы через `respx` — никаких живых запросов в CI.
+- **10 smoke-архетипов** контрагентов (`tests/test_smoke_archetypes.py`) покрывают все 4 значения `verdict_action` (`safe_to_proceed` / `manual_review_required` / `high_risk_do_not_proceed` / `impossible_contractor_defunct`).
+- Pre-release audit пройден: secrets scan, README public-audience check, `twine check`, wheel-contents audit, smoke-install из чистого venv.
 
 Первый публичный релиз. Семь тулзов покрывают полный чек-лист due diligence по российским контрагентам через открытые данные ФНС.
 
@@ -61,10 +55,17 @@
 - `kad.arbitr.ru` — Картотека арбитражных дел.
 - `nalog.gov.ru/opendata/` — Open Data ФНС (через ETL CLI).
 
-### Тестовое покрытие
+### Metadata / упаковка
 
-- 236 тестов, 85% coverage.
-- Все внешние API замоканы (`respx`) — никаких живых HTTP-запросов в CI.
+- **`py.typed`** (PEP 561) — IDE и mypy видят type-информацию без дополнительной установки.
+- **`pyproject.toml`**: расширенные keywords (13), classifiers Beta, `Intended Audience :: Financial/Legal`, `Natural Language :: Russian`, `Typing :: Typed`. Секция `[project.urls]` (Homepage / Repository / Issues / Changelog / Documentation). Секция `[tool.hatch.build.targets.sdist]` с явным include (`src/**`, `tests/**`, `README.md`, `LICENSE`, `CHANGELOG.md`, `pyproject.toml`, `.env.example`) и exclude (caches, venv, sqlite, build artifacts).
+- **Dependency constraints** MAJOR-lock: `fastmcp>=3.0.0,<4.0.0`, `httpx>=0.27.0,<1.0.0`, `pydantic>=2.6.0,<3.0.0`, `aiosqlite>=0.20.0,<1.0.0`.
+- **Optional-dependency `release`** — `build` + `twine` для релизных сессий.
+
+### Fixed (ещё в pre-release)
+
+- **КРИТИЧНО**: `.gitignore` — anchored `/data/`, `/db/`, `/logs/` (было без anchor). Hatchling при сборке wheel уважает `.gitignore` как VCS-фильтр; неанкеренные правила исключали `src/atomno_mcp_fns_check/data/` (okved_2_dict.json, registries_seed.json) и `src/atomno_mcp_fns_check/db/` (cache.py, registries.py) из итогового wheel. Без фикса установка из PyPI упала бы на `ImportError`. Верифицировано через содержимое wheel + smoke-install в чистом venv.
+- `.gitignore` — добавлены `*.sqlite`, `*.sqlite-journal`, `atomno_mcp_fns_check_cache*` (runtime создаёт `.sqlite`, не `.sqlite3`).
 
 ---
 
