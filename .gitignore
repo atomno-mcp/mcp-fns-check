@@ -1,0 +1,71 @@
+# === AWB internal (НЕ публиковать) ===
+_knowledge/
+_data/
+_archive/
+_dumps/
+_backups/
+_assets/
+ROADMAP.md
+USER_ACTIONS.md
+ACTIVITY_LOG.md
+AGENTS.md
+project.json
+*.code-workspace
+
+# === Cursor / IDE personal ===
+.cursor/skills/
+.cursor/rules/
+.cursor/agent_state.json
+.vscode/
+.idea/
+
+# === Secrets ===
+.env
+.env.local
+.env.production
+*.pem
+*.key
+secrets/
+
+# === Data / runtime ===
+# Anchored к корню репо, чтобы не зацепить src/atomno_mcp_fns_check/data/ и /db/ (package resources)
+/data/
+/db/
+/logs/
+*.sqlite
+*.sqlite-journal
+*.sqlite3
+*.sqlite3-journal
+atomno_mcp_fns_check_cache*
+*.log
+.cache/
+
+# === FNS Open Data dumps (локальные, большие, не для публикации) ===
+fns_opendata/
+opendata/
+
+# === Python build / cache ===
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+dist/
+build/
+*.egg-info/
+.tox/
+.nox/
+.venv/
+venv/
+env/
+
+# === OS ===
+.DS_Store
+Thumbs.db
+desktop.ini
