@@ -1,0 +1,20 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.atomno-labs/mcp-fns-check",
+  "description": "Russian contractor due-diligence for AI agents — EGRUL/EGRIP card, red flags, bankruptcy (EFRSB), FSSP enforcement, arbitration (KAD) and aggregated check_contractor verdict from public FNS sources.",
+  "repository": {
+    "url": "https://github.com/atomno-labs/mcp-fns-check",
+    "source": "github"
+  },
+  "version": "0.1.2",
+  "packages": [
+    {
+      "registryType": "pypi",
+      "registryBaseUrl": "https://pypi.org",
+      "identifier": "atomno-mcp-fns-check",
+      "version": "0.1.2",
+      "runtimeHint": "uvx",
+      "transport": { "type": "stdio" }
+    }
+  ]
+}

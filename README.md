@@ -1,3 +1,5 @@
+<!-- mcp-name: io.github.atomno-labs/mcp-fns-check -->
+
 # atomno-mcp-fns-check
 
 > MCP-сервер для проверки российских контрагентов (юридические лица и ИП) через публичные данные ФНС: ЕГРЮЛ/ЕГРИП, ЕФРСБ, «Прозрачный бизнес», ФССП, КАД.
@@ -261,5 +263,5 @@ MIT — см. `LICENSE`.
 ## Ссылки
 
 - GitHub: [atomno-labs/mcp-fns-check](https://github.com/atomno-labs/mcp-fns-check)
-- Больше MCP-серверов под брендом atomno: [каталог atomno.ru](https://atomno.ru/mcp) (скоро)
+- Больше MCP-серверов под брендом atomno: [каталог atomno-labs.ru](https://atomno-labs.ru/) (скоро)
 - MCP-спецификация: [modelcontextprotocol.io](https://modelcontextprotocol.io)

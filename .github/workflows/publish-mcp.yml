@@ -1,0 +1,38 @@
+name: Publish to MCP Registry
+
+# Регистрирует сервер в официальном реестре registry.modelcontextprotocol.io
+# при публикации GitHub Release (тег vX.Y.Z). Аутентификация — GitHub OIDC,
+# секретов не требует; namespace io.github.atomno-labs/* подтверждается identity репо.
+# PyPI-пакет публикуется отдельно (release-runbook); здесь — только метаданные.
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  id-token: write   # обязательно для OIDC
+  contents: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install mcp-publisher
+        run: |
+          curl -L "https://github.com/modelcontextprotocol/registry/releases/latest/download/mcp-publisher_$(uname -s | tr '[:upper:]' '[:lower:]')_$(uname -m | sed 's/x86_64/amd64/;s/aarch64/arm64/').tar.gz" | tar xz mcp-publisher
+
+      - name: Authenticate (GitHub OIDC)
+        run: ./mcp-publisher login github-oidc
+
+      - name: Sync release tag into server.json
+        run: |
+          VERSION="${GITHUB_REF#refs/tags/v}"
+          if [ "$VERSION" != "$GITHUB_REF" ]; then
+            jq --arg v "$VERSION" '.version=$v | .packages[0].version=$v' server.json > server.tmp && mv server.tmp server.json
+          fi
+
+      - name: Publish to MCP Registry
+        run: ./mcp-publisher publish

@@ -4,12 +4,12 @@ build-backend = "hatchling.build"
 
 [project]
 name = "atomno-mcp-fns-check"
-version = "0.1.1"
+version = "0.1.2"
 description = "MCP server for checking RU counterparties via FNS open data (EGRUL/EGRIP, EFRSB, KAD, FSSP)."
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
-authors = [{ name = "atomno-labs", email = "hello@atomno.ru" }]
+authors = [{ name = "atomno-labs", email = "hello@atomno-labs.ru" }]
 keywords = [
   "mcp",
   "model-context-protocol",
