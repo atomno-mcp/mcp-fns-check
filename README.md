@@ -263,5 +263,5 @@ MIT — см. `LICENSE`.
 ## Ссылки
 
 - GitHub: [atomno-mcp/mcp-fns-check](https://github.com/atomno-mcp/mcp-fns-check)
-- Больше MCP-серверов под брендом atomno: [каталог atomno-labs.ru](https://atomno-labs.ru/) (скоро)
+- Больше MCP-серверов под брендом atomno: [каталог atomno-mcp.ru](https://atomno-mcp.ru/) (скоро)
 - MCP-спецификация: [modelcontextprotocol.io](https://modelcontextprotocol.io)

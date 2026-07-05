@@ -9,7 +9,7 @@ description = "MCP server for checking RU counterparties via FNS open data (EGRU
 readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
-authors = [{ name = "atomno-labs", email = "hello@atomno-labs.ru" }]
+authors = [{ name = "atomno-mcp", email = "hello@atomno-mcp.ru" }]
 keywords = [
   "mcp",
   "model-context-protocol",

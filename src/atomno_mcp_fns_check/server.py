@@ -362,7 +362,7 @@ def _build_arg_parser() -> argparse.ArgumentParser:
             "  MCP_FNS_CACHE_DB   — путь к SQLite-файлу кэша ответов ЕГРЮЛ (TTL 168h).\n"
             "  MCP_FNS_LOG_LEVEL  — уровень логирования (перекрывается флагом --log-level).\n"
             "\n"
-            "Документация: https://github.com/atomno-labs/mcp-fns-check"
+            "Документация: https://github.com/atomno-mcp/mcp-fns-check"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )

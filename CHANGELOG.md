@@ -30,7 +30,7 @@
 ## [0.1.0] — 2026-04-25
 
 **🚀 Опубликован на PyPI**: https://pypi.org/project/atomno-mcp-fns-check/0.1.0/
-**🐙 GitHub**: https://github.com/atomno-labs/mcp-fns-check
+**🐙 GitHub**: https://github.com/atomno-mcp/mcp-fns-check
 
 ### Качество релиза
 
@@ -90,6 +90,6 @@
 
 ---
 
-[Unreleased]: https://github.com/atomno-labs/mcp-fns-check/compare/v0.1.1...HEAD
-[0.1.1]: https://github.com/atomno-labs/mcp-fns-check/releases/tag/v0.1.1
-[0.1.0]: https://github.com/atomno-labs/mcp-fns-check/releases/tag/v0.1.0
+[Unreleased]: https://github.com/atomno-mcp/mcp-fns-check/compare/v0.1.1...HEAD
+[0.1.1]: https://github.com/atomno-mcp/mcp-fns-check/releases/tag/v0.1.1
+[0.1.0]: https://github.com/atomno-mcp/mcp-fns-check/releases/tag/v0.1.0
