@@ -2,7 +2,7 @@ name: Publish to MCP Registry
 
 # Регистрирует сервер в официальном реестре registry.modelcontextprotocol.io
 # при публикации GitHub Release (тег vX.Y.Z). Аутентификация — GitHub OIDC,
-# секретов не требует; namespace io.github.atomno-labs/* подтверждается identity репо.
+# секретов не требует; namespace io.github.atomno-mcp/* подтверждается identity репо.
 # PyPI-пакет публикуется отдельно (release-runbook); здесь — только метаданные.
 
 on:

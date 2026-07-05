@@ -1,4 +1,4 @@
-<!-- mcp-name: io.github.atomno-labs/mcp-fns-check -->
+<!-- mcp-name: io.github.atomno-mcp/mcp-fns-check -->
 
 # atomno-mcp-fns-check
 
@@ -181,7 +181,7 @@ claude mcp add fns-check atomno-mcp-fns-check
 | `MCP_FNS_REGISTRIES_DB` | Путь к SQLite-файлу реестров (массовые адреса/руководители/дисквалификации) | `<cache>.registries.sqlite` |
 | `MCP_FNS_CACHE_TTL_HOURS` | TTL кэшированных карточек, часов | `168` (7 суток) |
 | `MCP_FNS_HTTP_TIMEOUT` | Таймаут HTTP, секунд | `15` |
-| `MCP_FNS_USER_AGENT` | User-Agent HTTP-клиента | `atomno-mcp-fns-check/0.1 (+https://github.com/atomno-labs/mcp-fns-check)` |
+| `MCP_FNS_USER_AGENT` | User-Agent HTTP-клиента | `atomno-mcp-fns-check/0.1 (+https://github.com/atomno-mcp/mcp-fns-check)` |
 | `MCP_FNS_LOG_LEVEL` | Уровень логирования (DEBUG/INFO/WARNING/ERROR) | `INFO` |
 
 Шаблон — `.env.example`.
@@ -213,7 +213,7 @@ atomno-mcp-fns-etl --registry disqualified --source ./fns_open_data/disqualified
 ## Разработка
 
 ```bash
-git clone https://github.com/atomno-labs/mcp-fns-check
+git clone https://github.com/atomno-mcp/mcp-fns-check
 cd mcp-fns-check
 python -m venv .venv
 source .venv/bin/activate    # Linux/macOS
@@ -262,6 +262,6 @@ MIT — см. `LICENSE`.
 
 ## Ссылки
 
-- GitHub: [atomno-labs/mcp-fns-check](https://github.com/atomno-labs/mcp-fns-check)
+- GitHub: [atomno-mcp/mcp-fns-check](https://github.com/atomno-mcp/mcp-fns-check)
 - Больше MCP-серверов под брендом atomno: [каталог atomno-labs.ru](https://atomno-labs.ru/) (скоро)
 - MCP-спецификация: [modelcontextprotocol.io](https://modelcontextprotocol.io)

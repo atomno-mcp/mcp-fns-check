@@ -6,6 +6,12 @@
 
 ## [Unreleased]
 
+## [0.1.3] — 2026-07-05
+
+### Changed
+
+- GitHub-организация переименована `atomno-labs` → `atomno-mcp`; обновлены ссылки на репозиторий и MCP-реестр (`pyproject.toml`, `server.json`, `README`, workflow публикации).
+
 ## [0.1.1] — 2026-04-25
 
 **Patch release**: CLI-UX fix. Публичный API тулзов MCP без изменений — обновление безопасно для всех уже работающих интеграций (Cursor, Claude Desktop, Claude Code, Cline).

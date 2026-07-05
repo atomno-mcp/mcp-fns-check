@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "atomno-mcp-fns-check"
-version = "0.1.2"
+version = "0.1.3"
 description = "MCP server for checking RU counterparties via FNS open data (EGRUL/EGRIP, EFRSB, KAD, FSSP)."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -53,11 +53,11 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/atomno-labs/mcp-fns-check"
-Repository = "https://github.com/atomno-labs/mcp-fns-check"
-Issues = "https://github.com/atomno-labs/mcp-fns-check/issues"
-Changelog = "https://github.com/atomno-labs/mcp-fns-check/blob/main/CHANGELOG.md"
-Documentation = "https://github.com/atomno-labs/mcp-fns-check#readme"
+Homepage = "https://github.com/atomno-mcp/mcp-fns-check"
+Repository = "https://github.com/atomno-mcp/mcp-fns-check"
+Issues = "https://github.com/atomno-mcp/mcp-fns-check/issues"
+Changelog = "https://github.com/atomno-mcp/mcp-fns-check/blob/main/CHANGELOG.md"
+Documentation = "https://github.com/atomno-mcp/mcp-fns-check#readme"
 
 [project.optional-dependencies]
 dev = [
