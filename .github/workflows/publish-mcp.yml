@@ -4,11 +4,13 @@ name: Publish to MCP Registry
 # при публикации GitHub Release (тег vX.Y.Z). Аутентификация — GitHub OIDC,
 # секретов не требует; namespace io.github.atomno-mcp/* подтверждается identity репо.
 # PyPI-пакет публикуется отдельно (release-runbook); здесь — только метаданные.
+#
+# Только release:published — без workflow_dispatch (см. atomno-mcp-conventions §14).
+# Повтор той же версии в реестре immutable → skip (exit 0), не красный CI.
 
 on:
   release:
     types: [published]
-  workflow_dispatch:
 
 permissions:
   id-token: write   # обязательно для OIDC
@@ -27,12 +29,25 @@ jobs:
       - name: Authenticate (GitHub OIDC)
         run: ./mcp-publisher login github-oidc
 
-      - name: Sync release tag into server.json
+      - name: Sync version into server.json
         run: |
-          VERSION="${GITHUB_REF#refs/tags/v}"
-          if [ "$VERSION" != "$GITHUB_REF" ]; then
-            jq --arg v "$VERSION" '.version=$v | .packages[0].version=$v' server.json > server.tmp && mv server.tmp server.json
-          fi
+          VERSION="${{ github.event.release.tag_name }}"
+          VERSION="${VERSION#v}"
+          jq --arg v "$VERSION" '.version=$v | .packages[0].version=$v' server.json > server.tmp && mv server.tmp server.json
+          echo "Synced server.json version to $VERSION"
 
       - name: Publish to MCP Registry
-        run: ./mcp-publisher publish
+        run: |
+          set +e
+          output=$(./mcp-publisher publish 2>&1)
+          rc=$?
+          echo "$output"
+          if [ $rc -eq 0 ]; then
+            echo "Published successfully"
+            exit 0
+          fi
+          if echo "$output" | grep -qiE 'duplicate version|cannot publish duplicate'; then
+            echo "::notice title=Already published::Version already in MCP Registry — skipping (not an error)"
+            exit 0
+          fi
+          exit $rc
