@@ -1,18 +1,18 @@
 {
   "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
-  "name": "io.github.atomno-mcp/mcp-fns-check",
+  "name": "mcp-fns-check",
   "description": "Russian tax authority (FNS) counterparty checks: status, debts, blocks. Due diligence MCP.",
   "repository": {
     "url": "https://github.com/atomno-mcp/mcp-fns-check",
     "source": "github"
   },
-  "version": "0.1.2",
+  "version": "0.1.6",
   "packages": [
     {
       "registryType": "pypi",
       "registryBaseUrl": "https://pypi.org",
       "identifier": "atomno-mcp-fns-check",
-      "version": "0.1.2",
+      "version": "0.1.6",
       "runtimeHint": "uvx",
       "transport": {
         "type": "stdio"
