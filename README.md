@@ -10,6 +10,11 @@
 ![mcp](https://img.shields.io/badge/MCP-compatible-brightgreen)
 ![tests](https://img.shields.io/badge/tests-265%20passed-brightgreen)
 ![coverage](https://img.shields.io/badge/coverage-86%25-brightgreen)
+[![Glama](https://img.shields.io/badge/Glama-listed-7c3aed.svg)](https://glama.ai/mcp/servers/atomno-mcp/mcp-fns-check)
+
+<a href="https://glama.ai/mcp/servers/atomno-mcp/mcp-fns-check">
+  <img width="380" height="200" src="https://glama.ai/mcp/servers/atomno-mcp/mcp-fns-check/badge" alt="mcp-fns-check MCP server" />
+</a>
 
 Готов к подключению в Claude Desktop, Cursor, Claude Code, Cline и любой другой клиент, совместимый с Model Context Protocol (MCP).
 
