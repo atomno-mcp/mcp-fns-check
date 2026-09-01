@@ -2,7 +2,9 @@
 
 # atomno-mcp-fns-check
 
-> MCP-сервер для проверки российских контрагентов (юридические лица и ИП) через публичные данные ФНС: ЕГРЮЛ/ЕГРИП, ЕФРСБ, «Прозрачный бизнес», ФССП, КАД.
+MCP-сервер проверки российских контрагентов: ЕГРЮЛ, банкротство, налоговые долги, приставы и арбитражные дела. Для разведки компаний — подключается к Cursor, Claude и любому клиенту MCP.
+
+Russian counterparty check for AI agents.
 
 ![build](https://img.shields.io/badge/build-local-informational)
 ![version](https://img.shields.io/badge/version-0.1.0-blue)
