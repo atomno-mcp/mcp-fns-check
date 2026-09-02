@@ -14,7 +14,7 @@
         * get_okveds             — ОКВЭД с расшифровкой по справочнику ОКВЭД-2.
         * get_directors_history  — текущий руководитель + история (по мере
                                    подгрузки Open Data ЕГРЮЛ).
-        * check_for_red_flags    — 8 проверок риска (4 базовых + 4 расширенных).
+        * check_for_red_flags    — 7 проверок риска (4 базовых + 3 расширенных).
 
 Сервис-контекст (`ServiceContext`) создаётся лениво при первом вызове, общий
 на жизненный цикл процесса. Закрытие httpx-клиентов и SQLite — через
@@ -39,6 +39,7 @@ from .context import ServiceContext
 from .errors import McpFnsError
 from .tools import check_contractor as _check_contractor_impl
 from .tools import check_for_red_flags as _check_for_red_flags_impl
+from .tools import check_individual_bankruptcy as _check_individual_bankruptcy_impl
 from .tools import check_inn as _check_inn_impl
 from .tools import check_ogrn as _check_ogrn_impl
 from .tools import get_directors_history as _get_directors_history_impl
@@ -52,14 +53,15 @@ mcp: FastMCP = FastMCP(
     instructions=(
         "Сервер для проверки российских контрагентов через открытые данные ФНС. "
         "Главный тул — check_contractor(identifier): агрегирует карточку ЕГРЮЛ, "
-        "жизненный статус с обогащением из ЕФРСБ, 8 проверок риска (включая "
-        "массовые адреса/руководители, дисквалификация, банкротство, налоговые "
-        "долги, исполнительные производства, арбитражные дела) и возвращает "
+        "жизненный статус с обогащением из ЕФРСБ, 7 проверок риска (массовые "
+        "адреса/руководители, дисквалификация, банкротство, налоговые долги, "
+        "исполнительные производства, арбитражные дела) и возвращает "
         "детерминированный вердикт плюс список рекомендаций. Гранулярные тулзы "
         "(check_inn, check_ogrn, get_legal_status, get_okveds, "
         "get_directors_history, check_for_red_flags) доступны для точечных "
         "запросов. Источники — публичные: egrul.nalog.ru, bankrot.fedresurs.ru, "
-        "pb.nalog.ru, fssp.gov.ru, kad.arbitr.ru."
+        "открытые данные ФНС (налоговые долги, массовые адреса и руководители, "
+        "дисквалифицированные лица), fssp.gov.ru, kad.arbitr.ru."
     ),
 )
 
@@ -140,21 +142,21 @@ async def check_contractor(
     (13 цифр — юр.лицо, 15 — ИП). Тип определяется строго по длине и
     контрольной цифре.
 
-    Собирает полную картину из 5 публичных источников ФНС и связанных:
+    Собирает полную картину из публичных источников ФНС и связанных:
       * egrul.nalog.ru      — базовая карточка (наименование, руководитель,
                               адрес, ОКВЭД, статус).
       * bankrot.fedresurs.ru (ЕФРСБ) — активные дела о банкротстве.
-      * pb.nalog.ru (Прозрачный бизнес) — налоговые долги, непредставление
-                              отчётности.
+      * Открытые данные ФНС (набор «debtam») — налоговые долги.
       * fssp.gov.ru         — открытые исполнительные производства.
       * kad.arbitr.ru       — активные арбитражные дела как ответчика.
-      * Локальные реестры ФНС — массовые адреса, массовые руководители,
-                              дисквалифицированные руководители.
+      * service.nalog.ru + локальные выгрузки открытых данных ФНС —
+                              дисквалифицированные руководители, массовые
+                              адреса, массовые руководители.
 
     Возвращает агрегированный отчёт:
       * `card`                 — CounterpartyCard с базовыми полями.
       * `legal_status`         — жизненный статус (active/bankruptcy/...).
-      * `risks`                — до 8 проверок риска со scoring 0..100.
+      * `risks`                — до 7 проверок риска со scoring 0..100.
       * `verdict_action`       — детерминированный вердикт:
           - `safe_to_proceed`                 — препятствий не найдено.
           - `manual_review_required`          — medium-риски или часть
@@ -173,15 +175,18 @@ async def check_contractor(
     Поведение при сбоях источников:
       * Если ЕГРЮЛ недоступен — поднимается SourceUnavailableError
         (базовая карточка — единственный blocking-источник).
-      * Сбои остальных источников (ЕФРСБ/ФССП/КАД/Прозрачный бизнес)
+      * Сбои остальных источников (ЕФРСБ/ФССП/КАД/реестры открытых данных)
         складываются в `risks.errors[]` и НЕ валят общий отчёт.
-      * При часте сбоев вердикт становится `manual_review_required`.
+      * Если хотя бы одна проверка не отработала, вердикт становится
+        `manual_review_required`: «можно работать» выдаётся только когда
+        ответили все 7 проверок и ни одна не нашла риска.
 
     Args:
         identifier: ИНН (10/12 цифр) или ОГРН/ОГРНИП (13/15 цифр).
             Пример: '7707083893' (Сбербанк) или '1027700132195'.
-        include_extended_risks: Запускать ли 4 расширенные проверки
-            (Прозрачный бизнес, ФССП, КАД). По умолчанию True.
+        include_extended_risks: Запускать ли 3 расширенные проверки
+            (налоговые долги из открытых данных ФНС, ФССП, КАД).
+            По умолчанию True.
         lawsuits_threshold_rub: Порог фильтрации арбитражных дел в рублях.
             По умолчанию 1 000 000 ₽ — отсекает мелкие споры.
     """
@@ -290,7 +295,7 @@ async def check_for_red_flags(
     include_extended: bool = True,
     lawsuits_threshold_rub: float = 1_000_000.0,
 ) -> dict[str, Any]:
-    """Агрегированный риск-чек по контрагенту (8 проверок, SPEC §3.5).
+    """Агрегированный риск-чек по контрагенту (7 проверок, SPEC §3.5).
 
     Базовые 4 проверки (всегда):
       * `mass_address` — массовый юр.адрес ФНС;
@@ -298,19 +303,21 @@ async def check_for_red_flags(
       * `disqualified_director` — руководитель в реестре дисквалифицированных;
       * `bankruptcy_records` — активные дела в ЕФРСБ.
 
-    Расширенные 4 проверки (`include_extended=True`):
-      * `tax_debts` — индикатор задолженности по налогам (Прозрачный бизнес);
-      * `no_reporting` — нет налоговой отчётности > 1 года (Прозрачный бизнес);
+    Расширенные 3 проверки (`include_extended=True`):
+      * `tax_debts` — задолженность по налогам из открытых данных ФНС
+        (набор «debtam»);
       * `enforcement_proceedings` — открытые исп.производства (Банк данных ФССП);
       * `active_lawsuits` — активные арбитражные дела где контрагент ответчик
         (КАД), фильтр по сумме иска через `lawsuits_threshold_rub`.
 
     Любая внешняя проверка может вернуть ошибку (CAPTCHA, 5xx, timeout) — она
-    попадёт в `errors[]` и не сорвёт остальные проверки.
+    попадёт в `errors[]` и не сорвёт остальные проверки. Пустой `flags[]` сам
+    по себе не означает «чисто»: смотрите `coverage` — сколько проверок реально
+    ответило.
 
     Args:
         inn: ИНН контрагента (10 или 12 цифр).
-        include_extended: запускать ли расширенные 4 проверки. По умолчанию True.
+        include_extended: запускать ли расширенные 3 проверки. По умолчанию True.
         lawsuits_threshold_rub: порог фильтра арбитражных дел в рублях.
             По умолчанию 1 000 000 ₽ (отсечь мелкие споры).
     """
@@ -321,6 +328,42 @@ async def check_for_red_flags(
             inn,
             include_extended=include_extended,
             lawsuits_threshold_rub=lawsuits_threshold_rub,
+        )
+        return report.model_dump(mode="json")
+    except McpFnsError as exc:
+        return _err(exc)
+
+
+@mcp.tool()
+async def check_individual_bankruptcy(
+    fio: str,
+    birth_date: str,
+    snils: str | None = None,
+) -> dict[str, Any]:
+    """Проверка банкротства физического лица в ЕФРСБ по ФИО и дате рождения.
+
+    Ищет активные процедуры банкротства гражданина в публичном реестре
+    bankrot.fedresurs.ru. Для уточнения однофамильцев можно передать СНИЛС.
+
+    Возвращает:
+      * `has_active_bankruptcy` — найдено ли хотя бы одно активное дело;
+      * `active_cases[]` — номера дел, стадии, match_confidence;
+      * `query_hash` — анонимный ID запроса (без plain-text ПДн в логах);
+      * `warnings[]` — antibot/неоднозначные совпадения;
+      * `disclaimer_ru` — правовая оговорка.
+
+    Args:
+        fio: ФИО полностью, кириллица. Пример: 'Иванов Иван Иванович'.
+        birth_date: Дата рождения 'YYYY-MM-DD' или 'dd.mm.yyyy'.
+        snils: Опционально — СНИЛС (11 цифр) для disambiguation однофамильцев.
+    """
+    try:
+        ctx = await _get_ctx()
+        report = await _check_individual_bankruptcy_impl(
+            fio=fio,
+            birth_date=birth_date,
+            snils=snils,
+            efrsb=ctx.efrsb,
         )
         return report.model_dump(mode="json")
     except McpFnsError as exc:
@@ -347,8 +390,9 @@ def _build_arg_parser() -> argparse.ArgumentParser:
         prog="atomno-mcp-fns-check",
         description=(
             "MCP-сервер для проверки российских контрагентов через открытые данные ФНС "
-            "(ЕГРЮЛ/ЕГРИП, ЕФРСБ, Прозрачный бизнес, ФССП, КАД). "
-            "7 тулзов: check_contractor (главный агрегатор) + 6 granular. "
+            "(ЕГРЮЛ/ЕГРИП, ЕФРСБ, открытые данные ФНС по долгам и реестрам, ФССП, КАД). "
+            "7 тулзов: check_contractor (главный агрегатор) + 6 granular + "
+        "check_individual_bankruptcy (физлица по ФИО). "
             "По умолчанию запускается по MCP stdio-транспорту для интеграции с Cursor, "
             "Claude Desktop, Claude Code и другими MCP-клиентами."
         ),

@@ -5,7 +5,7 @@
     1. `check_inn` / `check_ogrn` — базовая карточка ЕГРЮЛ (`CounterpartyCard`).
     2. `get_legal_status`        — агрегированный жизненный статус с обогащением
                                    через ЕФРСБ.
-    3. `check_for_red_flags`     — до 8 проверок рисков (SPEC §3.5).
+    3. `check_for_red_flags`     — до 7 проверок рисков (SPEC §3.5).
 
 Поверх собирается `verdict_action` ∈ {safe_to_proceed, manual_review_required,
 high_risk_do_not_proceed, impossible_contractor_defunct} — **детерминированно**
@@ -78,14 +78,9 @@ RECOMMENDATIONS_BY_FLAG: dict[FlagCode, str] = {
         "процедуры могут быть оспорены."
     ),
     "tax_debts": (
-        "Прозрачный бизнес ФНС фиксирует налоговую задолженность. Рекомендуется "
-        "запросить справку из ИФНС об отсутствии задолженности (форма КНД "
-        "1120101) перед подписанием договора."
-    ),
-    "no_reporting": (
-        "Контрагент не сдаёт налоговую отчётность более года. Сделка с такой "
-        "компанией — повышенный риск отказа в вычете НДС (ст. 54.1 НК РФ). "
-        "Не рекомендуется принимать как первичного поставщика."
+        "ФНС публикует налоговую задолженность контрагента (открытые данные, "
+        "набор «debtam»). Запросите справку из ИФНС об отсутствии задолженности "
+        "(форма КНД 1120101) на актуальную дату перед подписанием договора."
     ),
     "enforcement_proceedings": (
         "У контрагента открыты исполнительные производства в ФССП. Учтите "
@@ -194,22 +189,25 @@ def _derive_verdict(
             ),
         )
 
-    if risks.errors:
+    coverage = risks.coverage
+    if risks.overall_risk_level == "unknown" or risks.errors or not coverage.is_complete:
         return (
             "manual_review_required",
             (
-                f"Часть источников не ответила ({len(risks.errors)} из "
-                f"{len(risks.errors) + len(risks.checks_passed) + len(risks.flags) + len(risks.checks_skipped)}). "
-                "Ручная верификация неответивших источников обязательна."
+                f"Проверок выполнено {coverage.answered} из {coverage.total}: "
+                f"{coverage.failed} не отработали, {coverage.skipped} пропущены. "
+                "Уровень риска не определён — по неотвеченным источникам нужна "
+                "ручная проверка."
             ),
         )
 
     return (
         "safe_to_proceed",
         (
-            f"Статус «{status.status_label_ru}», уровень риска — "
-            f"{risks.overall_risk_level} (score {risks.overall_risk_score}/100). "
-            "Препятствий к заключению сделки по открытым источникам не найдено."
+            f"Статус «{status.status_label_ru}», уровень риска — низкий "
+            f"(score {risks.overall_risk_score}/100). Ответили все "
+            f"{coverage.total} проверок, препятствий к заключению сделки "
+            "по открытым источникам не найдено."
         ),
     )
 
@@ -255,12 +253,8 @@ def _build_recommendations(
         if recommendation is not None:
             items.append(recommendation)
 
-    if risks.errors:
-        failed_codes = ", ".join(e.code for e in risks.errors)
-        items.append(
-            f"Источники не ответили: {failed_codes}. Повторите проверку "
-            "позже или используйте hosted Pro-tier с автоматическими retry."
-        )
+    for error in risks.errors:
+        items.append(f"Проверка «{error.code}» не выполнена. {error.message_ru}")
 
     if status.warnings:
         items.extend(f"Предупреждение: {w}" for w in status.warnings)
@@ -305,11 +299,10 @@ def _collect_sources_meta(
     errored_codes = {e.code for e in risks.errors}
     checked_codes = set(risks.checks_passed) | {f.code for f in risks.flags} | set(risks.checks_skipped)
 
-    pb_checked = any(c in checked_codes for c in ("tax_debts", "no_reporting"))
-    pb_errored = any(c in errored_codes for c in ("tax_debts", "no_reporting"))
-    pb_fns_check_date = today if (pb_checked or pb_errored) else None
-    if pb_fns_check_date is not None:
-        sources_queried.add("pb_fns")
+    # «Прозрачный бизнес» больше не питает ни одну риск-проверку: в его ответе
+    # нет ни задолженности, ни отчётности (см. sources/pb_fns.py). Дату его
+    # опроса не выставляем, чтобы не создавать видимость проверенного источника.
+    pb_fns_check_date = None
 
     fssp_checked = "enforcement_proceedings" in checked_codes
     fssp_errored = "enforcement_proceedings" in errored_codes
@@ -323,7 +316,10 @@ def _collect_sources_meta(
     if kad_check_date is not None:
         sources_queried.add("kad")
 
-    registries_codes = {"mass_address", "mass_director", "disqualified_director"}
+    if "disqualified_director" in (checked_codes | errored_codes):
+        sources_queried.add("fns_disqualified")
+
+    registries_codes = {"mass_address", "mass_director", "tax_debts"}
     registries_touched = bool(registries_codes & (checked_codes | errored_codes))
     registries_check_date = today if registries_touched else None
     if registries_check_date is not None:
@@ -347,6 +343,7 @@ async def check_contractor(
     *,
     include_extended_risks: bool = True,
     lawsuits_threshold_rub: float = 1_000_000.0,
+    address: str | None = None,
     tier: ContractorTier = "open",
 ) -> ContractorReport:
     """Главный тул: полная проверка контрагента по одному идентификатору.
@@ -355,12 +352,17 @@ async def check_contractor(
         ctx: Общий ServiceContext с httpx-клиентами и SQLite-кэшем.
         identifier: ИНН (10/12 цифр) или ОГРН/ОГРНИП (13/15 цифр).
             Тип определяется строго по длине и контрольной цифре.
-        include_extended_risks: Выполнить ли 4 расширенные проверки риска
-            (Прозрачный бизнес, ФССП, КАД). По умолчанию True — в open-tier
-            они тоже доступны, просто с более строгими rate-limit провайдеров.
+        include_extended_risks: Выполнить ли 3 расширенные проверки риска
+            (налоговые долги из открытых данных ФНС, ФССП, КАД). По умолчанию
+            True — в open-tier они тоже доступны, просто с более строгими
+            rate-limit провайдеров.
         lawsuits_threshold_rub: Порог фильтрации арбитражных дел в рублях.
             Дела меньше порога не учитываются в риск-скоре. По умолчанию
             1 000 000 ₽ — отсекает мелкие потребительские споры.
+        address: Юридический адрес контрагента (из договора, счёта, реквизитов).
+            Нужен для проверки по реестру массовых адресов ФНС: поиск ЕГРЮЛ
+            адрес не возвращает, поэтому без него эта проверка честно
+            помечается невыполненной.
         tier: Какой tier записать в отчёт. Client (этот пакет) всегда отдаёт
             "open"; значения "free"/"pro" используются hosted-бэкендом.
 
@@ -387,7 +389,7 @@ async def check_contractor(
         raise ValidationError(
             (
                 "ЕГРЮЛ вернул запись без валидного ИНН — дальнейшие проверки "
-                "(ЕФРСБ/ФССП/КАД/Прозрачный бизнес) невозможны по ИНН. "
+                "(ЕФРСБ/ФССП/КАД/реестры открытых данных ФНС) невозможны по ИНН. "
                 "Обратитесь к расширенной выписке ЕГРЮЛ."
             ),
             details={"identifier": normalised, "egrul_inn": hit.inn},
@@ -404,6 +406,7 @@ async def check_contractor(
         inn_for_downstream,
         include_extended=include_extended_risks,
         lawsuits_threshold_rub=lawsuits_threshold_rub,
+        address=address,
     )
 
     verdict_action, verdict_reason = _derive_verdict(status, risks)

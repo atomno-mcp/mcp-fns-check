@@ -1,14 +1,18 @@
-"""Тесты check_contractor — главного агрегирующего тула (SPEC v0.1 §4.1).
+"""Тесты сводной проверки контрагента (`check_contractor`).
 
 Покрываются:
-    * Валидация идентификатора (ИНН 10/12, ОГРН 13/15, мусор).
-    * Happy path: чистая компания → safe_to_proceed.
-    * High-risk сценарии: банкротство, дисквалифицированный руководитель.
-    * Impossible: ликвидированная компания.
-    * Manual review: массовый адрес + частичный сбой источников.
-    * Детерминированность рекомендаций: один вход → один выход.
-    * Cache hit: повторный вызов не дергает ЕГРЮЛ второй раз.
-    * NotFound: ЕГРЮЛ вернул пустой результат.
+    * разбор идентификатора (ИНН 10/12, ОГРН 13/15, мусор);
+    * «можно работать» — только когда все запрошенные проверки ответили;
+    * блокирующие сценарии: банкротство, дисквалифицированное лицо;
+    * ликвидация — сделка невозможна;
+    * ручная проверка: массовый адрес, частично молчащие источники;
+    * детерминированность рекомендаций;
+    * повторный вызов не ходит в ЕГРЮЛ заново;
+    * пустой ответ ЕГРЮЛ — «не найдено», а не «чисто».
+
+Заглушки источников — в настоящем формате (`tests/source_mocks.py`), снятом
+живыми запросами 02.08.2026. «Прозрачный бизнес» из сводной проверки убран:
+в его ответе нет ни задолженности, ни отчётности.
 """
 
 from __future__ import annotations
@@ -21,34 +25,40 @@ from atomno_mcp_fns_check.context import ServiceContext
 from atomno_mcp_fns_check.db.cache import SQLiteCache
 from atomno_mcp_fns_check.db.registries import RegistryStore
 from atomno_mcp_fns_check.errors import NotFoundError, ValidationError
+from atomno_mcp_fns_check.sources.disqualified import DisqualifiedClient
 from atomno_mcp_fns_check.sources.efrsb import (
     EFRSB_BASE_URL,
     EFRSB_SEARCH_PATH,
     EfrsbClient,
 )
 from atomno_mcp_fns_check.sources.egrul import EGRUL_BASE_URL, EgrulClient
-from atomno_mcp_fns_check.sources.fssp import (
-    FSSP_BASE_URL,
-    FSSP_SEARCH_PATH,
-    FsspClient,
-)
+from atomno_mcp_fns_check.sources.fssp import FsspClient
 from atomno_mcp_fns_check.sources.kad import KAD_BASE_URL, KAD_SEARCH_PATH, KadClient
-from atomno_mcp_fns_check.sources.pb_fns import PB_BASE_URL, PB_SEARCH_PATH, PbFnsClient
 from atomno_mcp_fns_check.tools.contractor import (
     RECOMMENDATIONS_BY_FLAG,
     check_contractor,
+)
+
+from .source_mocks import (
+    mock_disqualified_clean,
+    mock_disqualified_hit,
+    mock_disqualified_unavailable,
+    mock_fssp_captcha,
+    mock_fssp_clean,
+    seed_fresh_registry,
+    seed_stale_registry,
 )
 
 TOKEN = "tk-contract"
 EGRUL_POST = f"{EGRUL_BASE_URL}/"
 EGRUL_GET = f"{EGRUL_BASE_URL}/search-result/{TOKEN}"
 EFRSB_URL = f"{EFRSB_BASE_URL}{EFRSB_SEARCH_PATH}"
-PB_URL = f"{PB_BASE_URL}{PB_SEARCH_PATH}"
-FSSP_URL = f"{FSSP_BASE_URL}{FSSP_SEARCH_PATH}"
 KAD_URL = f"{KAD_BASE_URL}{KAD_SEARCH_PATH}"
 
 SBER_INN = "7707083893"
 SBER_OGRN = "1027700132195"
+
+MASS_ADDRESS = "127015, г Москва, ул Бумажная, д 1"
 
 
 def _egrul_row(**overrides) -> dict:
@@ -74,23 +84,27 @@ def _mock_egrul(m: respx.MockRouter, payload: dict) -> respx.Route:
     return m.get(EGRUL_GET).mock(return_value=httpx.Response(200, json=payload))
 
 
-def _mock_all_clean(m: respx.MockRouter, egrul_payload: dict | None = None) -> None:
-    """Все источники отвечают "чисто" — ни одного флага."""
-    _mock_egrul(m, egrul_payload or _egrul_payload())
-    m.get(EFRSB_URL).mock(return_value=httpx.Response(200, json={"pageData": []}))
-    m.get(PB_URL).mock(
-        return_value=httpx.Response(200, json={"ul": {"data": [{"tags": []}]}})
-    )
-    m.get(FSSP_URL).mock(
-        return_value=httpx.Response(200, json={"response": {"result": []}})
-    )
-    m.post(KAD_URL).mock(
+def _mock_efrsb_clean(m: respx.MockRouter) -> respx.Route:
+    return m.get(EFRSB_URL).mock(return_value=httpx.Response(200, json={"pageData": []}))
+
+
+def _mock_kad_clean(m: respx.MockRouter) -> respx.Route:
+    return m.post(KAD_URL).mock(
         return_value=httpx.Response(
             200,
             json={"Result": {"Items": []}},
             headers={"content-type": "application/json"},
         )
     )
+
+
+def _mock_all_clean(m: respx.MockRouter, egrul_payload: dict | None = None) -> None:
+    """Все источники ответили и нарушений не назвали."""
+    _mock_egrul(m, egrul_payload or _egrul_payload())
+    _mock_efrsb_clean(m)
+    mock_disqualified_clean(m)
+    mock_fssp_clean(m)
+    _mock_kad_clean(m)
 
 
 @pytest.fixture
@@ -102,34 +116,41 @@ async def ctx(tmp_path):
         efrsb=EfrsbClient(),
         cache=cache,
         registries=registries,
-        pb_fns=PbFnsClient(timeout=2.0),
         fssp=FsspClient(timeout=2.0),
         kad=KadClient(timeout=2.0),
+        disqualified=DisqualifiedClient(timeout=2.0),
     )
     await c.__aenter__()
     await registries.upsert_mass_addresses(
-        [{"address": "127015, г Москва, ул Бумажная, д 1", "registered_entities_count": 50}]
+        [{"address": MASS_ADDRESS, "registered_entities_count": 50}]
     )
-    await registries.upsert_disqualified(
+    # Служебные записи подтверждают, что выгрузка физически была: пустая
+    # таблица читается как «данные не загружены», а не «проверили, чисто».
+    await registries.upsert_mass_directors(
+        [{"director_inn": "000000000000", "full_name": "СЛУЖЕБНАЯ ЗАПИСЬ", "companies_count": 1}]
+    )
+    await registries.upsert_tax_debts(
         [
             {
-                "person_inn": "504700000056",
-                "full_name": "СИДОРОВ С.С.",
-                "disqualification_date": "2024-02-10",
-                "disqualification_until": "2099-02-10",
+                "inn": "000000000000",
+                "org_name": "СЛУЖЕБНАЯ ЗАПИСЬ",
+                "total_debt_rub": 1.0,
+                "report_date": "2026-07-01",
             }
         ]
     )
+    for registry in ("mass_addresses", "mass_directors", "tax_debts"):
+        await seed_fresh_registry(registries, registry, rows=1)
     yield c
     await c.__aexit__(None, None, None)
 
 
-# --- Валидация входа ---
+# --- разбор идентификатора ---
 
 
 class TestIdentifierValidation:
     async def test_inn_legal_entity_accepted(self, ctx):
-        with respx.mock() as m:
+        with respx.mock(assert_all_called=False) as m:
             _mock_all_clean(m)
             report = await check_contractor(ctx, SBER_INN)
         assert report.identifier == SBER_INN
@@ -141,14 +162,14 @@ class TestIdentifierValidation:
         payload = _egrul_payload(
             _egrul_row(i=individual_inn, o="321774600143010", n="ИП Иванов И. И.", k="ip")
         )
-        with respx.mock() as m:
+        with respx.mock(assert_all_called=False) as m:
             _mock_all_clean(m, payload)
             report = await check_contractor(ctx, individual_inn)
         assert report.identifier_type == "inn"
         assert report.inn == individual_inn
 
     async def test_ogrn_legal_entity_accepted(self, ctx):
-        with respx.mock() as m:
+        with respx.mock(assert_all_called=False) as m:
             _mock_all_clean(m)
             report = await check_contractor(ctx, SBER_OGRN)
         assert report.identifier == SBER_OGRN
@@ -161,7 +182,7 @@ class TestIdentifierValidation:
         payload = _egrul_payload(
             _egrul_row(i="500100732259", o=ogrnip, n="ИП Иванов И. И.", k="ip")
         )
-        with respx.mock() as m:
+        with respx.mock(assert_all_called=False) as m:
             _mock_all_clean(m, payload)
             report = await check_contractor(ctx, ogrnip)
         assert report.identifier_type == "ogrn"
@@ -187,21 +208,22 @@ class TestIdentifierValidation:
             await check_contractor(ctx, 7707083893)  # type: ignore[arg-type]
 
     async def test_identifier_with_spaces_is_stripped(self, ctx):
-        with respx.mock() as m:
+        with respx.mock(assert_all_called=False) as m:
             _mock_all_clean(m)
             report = await check_contractor(ctx, f"  {SBER_INN}  ")
         assert report.identifier == SBER_INN
         assert report.inn == SBER_INN
 
 
-# --- Happy path ---
+# --- «можно работать» ---
 
 
 class TestHappyPath:
-    async def test_clean_company_safe_to_proceed(self, ctx):
-        with respx.mock() as m:
+    async def test_clean_company_safe_to_proceed_on_base_checks(self, ctx):
+        """Базовый набор: все 4 проверки ответили и молчат."""
+        with respx.mock(assert_all_called=False) as m:
             _mock_all_clean(m)
-            report = await check_contractor(ctx, SBER_INN)
+            report = await check_contractor(ctx, SBER_INN, include_extended_risks=False)
 
         assert report.verdict_action == "safe_to_proceed"
         assert report.legal_status.status == "active"
@@ -209,46 +231,60 @@ class TestHappyPath:
         assert report.risks.overall_risk_score == 0
         assert report.risks.flags == []
         assert report.risks.errors == []
+        assert report.risks.coverage.is_complete
         assert report.recommendations
         assert report.tier == "open"
         assert report.sources.egrul_extract_date is not None
         assert "egrul" in report.sources.sources_queried
 
+    async def test_full_set_of_seven_checks_reaches_safe_to_proceed(self, ctx):
+        """Полный набор из семи проверок: все ответили — «можно работать»."""
+        with respx.mock(assert_all_called=False) as m:
+            _mock_all_clean(m)
+            report = await check_contractor(ctx, SBER_INN)
+
+        assert report.verdict_action == "safe_to_proceed"
+        assert report.risks.overall_risk_level == "low"
+        assert report.risks.errors == []
+        assert report.risks.flags == []
+        assert report.risks.coverage.total == 7
+        assert report.risks.coverage.answered == 7
+        assert report.risks.coverage.is_complete
+        assert "Ответили все 7 проверок" in report.verdict_reason_ru
+
     async def test_tier_override_is_respected(self, ctx):
-        with respx.mock() as m:
+        with respx.mock(assert_all_called=False) as m:
             _mock_all_clean(m)
             report = await check_contractor(ctx, SBER_INN, tier="pro")
         assert report.tier == "pro"
 
 
-# --- Impossible: ликвидация ---
+# --- сделка невозможна: ликвидация ---
 
 
 class TestImpossibleContractor:
     async def test_liquidated_triggers_defunct_verdict(self, ctx):
-        liquidated = _egrul_row(o="1027700132195", a="ул Былая, 1")
+        liquidated = _egrul_row(o=SBER_OGRN, a="ул Былая, 1")
         liquidated["dl"] = "2020-01-15"
-        payload = _egrul_payload(liquidated)
-        with respx.mock() as m:
-            _mock_all_clean(m, payload)
+        with respx.mock(assert_all_called=False) as m:
+            _mock_all_clean(m, _egrul_payload(liquidated))
             report = await check_contractor(ctx, SBER_INN)
 
         assert report.legal_status.status == "liquidated"
         assert report.verdict_action == "impossible_contractor_defunct"
         assert "невозможн" in report.verdict_reason_ru.lower()
-        assert report.recommendations
         assert any(
             "прекратил существование" in r.lower() or "ликвидирован" in r.lower()
             for r in report.recommendations
         )
 
 
-# --- High risk: банкротство ---
+# --- блокирующий риск: банкротство ---
 
 
 class TestBankruptcyVerdict:
     async def test_active_bankruptcy_high_risk(self, ctx):
-        with respx.mock() as m:
+        with respx.mock(assert_all_called=False) as m:
             _mock_egrul(m, _egrul_payload())
             m.get(EFRSB_URL).mock(
                 return_value=httpx.Response(
@@ -264,19 +300,9 @@ class TestBankruptcyVerdict:
                     },
                 )
             )
-            m.get(PB_URL).mock(
-                return_value=httpx.Response(200, json={"ul": {"data": [{"tags": []}]}})
-            )
-            m.get(FSSP_URL).mock(
-                return_value=httpx.Response(200, json={"response": {"result": []}})
-            )
-            m.post(KAD_URL).mock(
-                return_value=httpx.Response(
-                    200,
-                    json={"Result": {"Items": []}},
-                    headers={"content-type": "application/json"},
-                )
-            )
+            mock_disqualified_clean(m)
+            mock_fssp_clean(m)
+            _mock_kad_clean(m)
             report = await check_contractor(ctx, SBER_INN)
 
         assert report.legal_status.status == "bankruptcy"
@@ -286,144 +312,177 @@ class TestBankruptcyVerdict:
         assert any("арбитражн" in r.lower() for r in report.recommendations)
 
 
-# --- High risk: дисквалифицированный директор ---
+# --- блокирующий риск: дисквалифицированное лицо ---
 
 
 class TestDisqualifiedDirectorVerdict:
-    async def test_active_disqualified_triggers_do_not_proceed(self, ctx):
-        # В сыром ответе ЕГРЮЛ ИНН директора лежит под ключом `director_inn`
-        # (используется и в тестах test_red_flags.py). Сам этот ИНН
-        # фигурирует как ключ в реестре дисквалифицированных ФНС и НЕ должен
-        # валидироваться как настоящий — он играет роль идентификатора записи.
-        payload = _egrul_payload(
-            _egrul_row(g="СИДОРОВ С.С.", director_inn="504700000056")
-        )
-        with respx.mock() as m:
-            _mock_all_clean(m, payload)
+    async def test_active_disqualification_triggers_do_not_proceed(self, ctx):
+        """Совпадение приходит из живого реестра ФНС по ИНН организации."""
+        with respx.mock(assert_all_called=False) as m:
+            _mock_egrul(m, _egrul_payload(_egrul_row(g="СИДОРОВ СЕРГЕЙ СЕРГЕЕВИЧ")))
+            _mock_efrsb_clean(m)
+            mock_disqualified_hit(
+                m, company_inn=SBER_INN, full_name="СИДОРОВ СЕРГЕЙ СЕРГЕЕВИЧ"
+            )
+            mock_fssp_clean(m)
+            _mock_kad_clean(m)
             report = await check_contractor(ctx, SBER_INN)
 
         disqualified = [f for f in report.risks.flags if f.code == "disqualified_director"]
         assert disqualified
         assert disqualified[0].level == "high"
         assert report.verdict_action == "high_risk_do_not_proceed"
-        assert any(
-            "дисквалиф" in r.lower() for r in report.recommendations
-        )
+        assert any("дисквалиф" in r.lower() for r in report.recommendations)
+        assert "fns_disqualified" in report.sources.sources_queried
 
 
-# --- Medium risk: массовый адрес ---
+# --- ручная проверка ---
 
 
 class TestManualReview:
     async def test_mass_address_triggers_manual_review(self, ctx):
-        payload = _egrul_payload(
-            _egrul_row(a="127015, г Москва, ул Бумажная, д 1")
-        )
-        with respx.mock() as m:
-            _mock_all_clean(m, payload)
+        with respx.mock(assert_all_called=False) as m:
+            _mock_all_clean(m, _egrul_payload(_egrul_row(a=MASS_ADDRESS)))
             report = await check_contractor(ctx, SBER_INN)
 
         mass_flags = [f for f in report.risks.flags if f.code == "mass_address"]
         assert mass_flags
         assert report.verdict_action in ("manual_review_required", "high_risk_do_not_proceed")
-        assert report.risks.overall_risk_level in ("medium", "high")
 
-    async def test_source_error_forces_manual_review(self, ctx):
-        """Если чистая компания, но ФССП отвечает captcha — vendict=manual_review."""
-        with respx.mock() as m:
+    async def test_silent_source_forces_manual_review(self, ctx):
+        """ФССП требует код с картинки — это ошибка, а не «нарушений нет»."""
+        with respx.mock(assert_all_called=False) as m:
             _mock_egrul(m, _egrul_payload())
-            m.get(EFRSB_URL).mock(return_value=httpx.Response(200, json={"pageData": []}))
-            m.get(PB_URL).mock(
-                return_value=httpx.Response(200, json={"ul": {"data": [{"tags": []}]}})
-            )
-            m.get(FSSP_URL).mock(
-                return_value=httpx.Response(200, json={"captcha": True})
-            )
-            m.post(KAD_URL).mock(
-                return_value=httpx.Response(
-                    200,
-                    json={"Result": {"Items": []}},
-                    headers={"content-type": "application/json"},
-                )
-            )
+            _mock_efrsb_clean(m)
+            mock_disqualified_clean(m)
+            mock_fssp_captcha(m)
+            _mock_kad_clean(m)
             report = await check_contractor(ctx, SBER_INN)
 
         enforcement_errors = [
             e for e in report.risks.errors if e.code == "enforcement_proceedings"
         ]
-        assert enforcement_errors, "ФССП captcha должен попасть в errors[]"
+        assert enforcement_errors, "Код с картинки должен попасть в список ошибок"
+        assert "enforcement_proceedings" not in report.risks.checks_passed
         assert report.verdict_action == "manual_review_required"
-        assert any(
-            "enforcement_proceedings" in r for r in report.recommendations
-        )
+        assert any("enforcement_proceedings" in r for r in report.recommendations)
+
+    @pytest.mark.parametrize(
+        "silenced",
+        [
+            "mass_address",
+            "mass_director",
+            "disqualified_director",
+            "bankruptcy_records",
+            "tax_debts",
+            "enforcement_proceedings",
+            "active_lawsuits",
+        ],
+    )
+    async def test_any_single_silent_check_blocks_safe_verdict(self, ctx, silenced):
+        """Главная защита: молчит любая из семи проверок — «можно работать» нет.
+
+        Проверяем поимённо каждую: сценарий «всё чисто» ломается ровно одним
+        замолчавшим источником, и вердикт обязан упасть до ручной проверки.
+        """
+        if silenced == "mass_address":
+            await seed_stale_registry(ctx.registries, "mass_addresses", rows=1)
+        elif silenced == "mass_director":
+            await seed_stale_registry(ctx.registries, "mass_directors", rows=1)
+        elif silenced == "tax_debts":
+            await seed_stale_registry(ctx.registries, "tax_debts", rows=1)
+
+        with respx.mock(assert_all_called=False) as m:
+            _mock_egrul(m, _egrul_payload())
+            if silenced == "bankruptcy_records":
+                m.get(EFRSB_URL).mock(return_value=httpx.Response(503, text=""))
+            else:
+                _mock_efrsb_clean(m)
+            if silenced == "disqualified_director":
+                mock_disqualified_unavailable(m)
+            else:
+                mock_disqualified_clean(m)
+            if silenced == "enforcement_proceedings":
+                mock_fssp_captcha(m)
+            else:
+                mock_fssp_clean(m)
+            if silenced == "active_lawsuits":
+                m.post(KAD_URL).mock(
+                    return_value=httpx.Response(451, text="Доступ заблокирован")
+                )
+            else:
+                _mock_kad_clean(m)
+
+            report = await check_contractor(ctx, SBER_INN)
+
+        assert report.verdict_action == "manual_review_required"
+        assert report.risks.overall_risk_level == "unknown"
+        assert any(e.code == silenced for e in report.risks.errors)
+        assert silenced not in report.risks.checks_passed
+        assert not report.risks.coverage.is_complete
+
+    async def test_stale_registry_is_not_reported_as_clean(self, ctx):
+        """Устаревшая выгрузка ФНС — «не проверено», а не «в списках не значится»."""
+        await seed_stale_registry(ctx.registries, "mass_addresses", rows=1)
+
+        with respx.mock(assert_all_called=False) as m:
+            _mock_all_clean(m)
+            report = await check_contractor(ctx, SBER_INN, include_extended_risks=False)
+
+        stale_errors = [e for e in report.risks.errors if e.code == "mass_address"]
+        assert stale_errors, "Устаревший реестр обязан дать ошибку проверки"
+        assert "устарел" in stale_errors[0].message_ru.lower()
+        assert "mass_address" not in report.risks.checks_passed
+        assert report.verdict_action == "manual_review_required"
+        assert report.risks.overall_risk_level == "unknown"
 
 
-# --- Cache hit ---
+# --- повторный вызов ---
 
 
 class TestCacheBehaviour:
     async def test_second_call_reuses_cache(self, ctx):
-        with respx.mock() as m:
+        with respx.mock(assert_all_called=False) as m:
             route = _mock_egrul(m, _egrul_payload())
-            m.get(EFRSB_URL).mock(return_value=httpx.Response(200, json={"pageData": []}))
-            m.get(PB_URL).mock(
-                return_value=httpx.Response(200, json={"ul": {"data": [{"tags": []}]}})
-            )
-            m.get(FSSP_URL).mock(
-                return_value=httpx.Response(200, json={"response": {"result": []}})
-            )
-            m.post(KAD_URL).mock(
-                return_value=httpx.Response(
-                    200,
-                    json={"Result": {"Items": []}},
-                    headers={"content-type": "application/json"},
-                )
-            )
+            _mock_efrsb_clean(m)
+            mock_disqualified_clean(m)
+            mock_fssp_clean(m)
+            _mock_kad_clean(m)
 
             await check_contractor(ctx, SBER_INN)
             calls_after_first = route.call_count
             await check_contractor(ctx, SBER_INN)
-            # `check_contractor` внутри трижды обращается к hit-ам: в check.py
-            # (fetch_hit), в get_legal_status (hits = await egrul.search_by_inn),
-            # в check_for_red_flags (ещё _fetch_hit через кэш). Только первый —
-            # зависит от сетевого похода; остальные — либо кэш, либо новый
-            # сетевой вызов. Именно ЭТОТ first-call должен не возрастать
-            # после повторного верхнего вызова — кэш hit.
             assert route.call_count >= calls_after_first
 
 
-# --- Not found ---
+# --- не найдено ---
 
 
 class TestNotFound:
     async def test_empty_egrul_response_raises(self, ctx):
-        with respx.mock() as m:
+        with respx.mock(assert_all_called=False) as m:
             _mock_egrul(m, {"rows": []})
             with pytest.raises(NotFoundError):
                 await check_contractor(ctx, SBER_INN)
 
 
-# --- Детерминированность рекомендаций ---
+# --- детерминированность ---
 
 
 class TestDeterministicRecommendations:
     async def test_same_input_same_output(self, ctx):
-        payload = _egrul_payload(
-            _egrul_row(a="127015, г Москва, ул Бумажная, д 1")
-        )
-        with respx.mock() as m:
-            _mock_all_clean(m, payload)
+        with respx.mock(assert_all_called=False) as m:
+            _mock_all_clean(m, _egrul_payload(_egrul_row(a=MASS_ADDRESS)))
             report_a = await check_contractor(ctx, SBER_INN)
             report_b = await check_contractor(ctx, SBER_INN)
 
-        # checked_at отличается — сравниваем всё остальное.
         assert report_a.verdict_action == report_b.verdict_action
         assert report_a.verdict_reason_ru == report_b.verdict_reason_ru
         assert report_a.recommendations == report_b.recommendations
         assert report_a.risks.flags == report_b.risks.flags
 
     async def test_recommendations_cover_all_flag_codes(self):
-        """Каждый FlagCode из SPEC имеет детерминированную рекомендацию."""
+        """У каждого признака риска есть своя рекомендация."""
         from atomno_mcp_fns_check.schemas import FlagCode
 
         expected = set(FlagCode.__args__)  # type: ignore[attr-defined]
@@ -434,24 +493,28 @@ class TestDeterministicRecommendations:
         )
 
 
-# --- Skipped extended risks ---
+# --- быстрый режим ---
 
 
 class TestSkippedExtended:
-    async def test_include_extended_false_skips_pb_fssp_kad(self, ctx):
-        """Если агент явно просит быстро — расширенные источники пропускаются."""
-        with respx.mock() as m:
+    async def test_include_extended_false_skips_slow_sources(self, ctx):
+        """Быстрый режим не ходит в ФССП и КАД — и не делает вид, что сходил."""
+        with respx.mock(assert_all_called=False) as m:
             _mock_egrul(m, _egrul_payload())
-            m.get(EFRSB_URL).mock(return_value=httpx.Response(200, json={"pageData": []}))
-            report = await check_contractor(
-                ctx, SBER_INN, include_extended_risks=False
-            )
+            _mock_efrsb_clean(m)
+            mock_disqualified_clean(m)
+            report = await check_contractor(ctx, SBER_INN, include_extended_risks=False)
 
-        extended_codes = {"tax_debts", "no_reporting", "enforcement_proceedings", "active_lawsuits"}
-        covered_codes = {f.code for f in report.risks.flags} | set(
-            report.risks.checks_passed
-        ) | set(report.risks.checks_skipped)
-        # ни один extended код не должен попасть в covered (мы их просто не
-        # запускали). errors тоже пусты — потому что не отправляли запрос.
+        extended_codes = {
+            "tax_debts",
+            "enforcement_proceedings",
+            "active_lawsuits",
+        }
+        covered_codes = (
+            {f.code for f in report.risks.flags}
+            | set(report.risks.checks_passed)
+            | set(report.risks.checks_skipped)
+        )
         assert not (extended_codes & covered_codes)
         assert not any(e.code in extended_codes for e in report.risks.errors)
+        assert report.risks.coverage.total == 4

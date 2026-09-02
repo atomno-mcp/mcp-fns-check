@@ -150,11 +150,20 @@ class OkvedReport(StrictModel):
 # --- Red flags ---
 
 RiskLevel = Literal["low", "medium", "high"]
+
+#: Итоговый уровень риска. Отдельно от `RiskLevel`, потому что кроме трёх
+#: степеней риска бывает четвёртое состояние — «не определён»: часть проверок
+#: не выполнилась, и «низкий риск» в этом случае был бы враньём.
+#: См. `C:/Users/Velcat/.cursor/rules/service-response-honesty.mdc`.
+OverallRiskLevel = Literal["low", "medium", "high", "unknown"]
+
+#: Коды проверок риска. Их семь. Восьмая — непредставление налоговой
+#: отчётности — убрана 02.08.2026: публичного источника этих сведений нет,
+#: проверка всегда молчала и делала вердикт «можно работать» недостижимым.
 FlagCode = Literal[
     "mass_address",
     "mass_director",
     "disqualified_director",
-    "no_reporting",
     "tax_debts",
     "bankruptcy_records",
     "enforcement_proceedings",
@@ -179,17 +188,43 @@ class CheckError(StrictModel):
     message_ru: str
 
 
+class CheckCoverage(StrictModel):
+    """Сколько проверок реально отработало.
+
+    Без этой секции отчёт нельзя прочитать честно: `flags: []` одинаково
+    выглядит и когда всё проверено и чисто, и когда ни один источник не ответил.
+    """
+
+    #: Сколько проверок запускалось.
+    total: int = 0
+    #: Сколько дали достоверный ответ (нашли флаг либо подтвердили отсутствие).
+    answered: int = 0
+    #: Сколько нашли риск.
+    flagged: int = 0
+    #: Сколько подтвердили отсутствие риска.
+    clean: int = 0
+    #: Сколько пропущено (нет входных данных, источник не подключён).
+    skipped: int = 0
+    #: Сколько не выполнилось (источник не ответил, реестр пуст/устарел).
+    failed: int = 0
+
+    @property
+    def is_complete(self) -> bool:
+        return self.total > 0 and self.answered == self.total
+
+
 class RedFlagsReport(StrictModel):
     """Ответ для check_for_red_flags."""
 
     inn: str
-    overall_risk_level: RiskLevel
+    overall_risk_level: OverallRiskLevel
     overall_risk_score: int = Field(ge=0, le=100)
     summary_ru: str
     flags: list[FlagDetail] = Field(default_factory=list)
     checks_passed: list[FlagCode] = Field(default_factory=list)
     checks_skipped: list[FlagCode] = Field(default_factory=list)
     errors: list[CheckError] = Field(default_factory=list)
+    coverage: CheckCoverage = Field(default_factory=CheckCoverage)
     checked_at: datetime
 
 
@@ -255,11 +290,59 @@ class ContractorSources(StrictModel):
     sources_queried: list[str] = Field(default_factory=list)
 
 
+IndividualMatchConfidence = Literal["exact", "possible", "unknown"]
+IndividualBankruptcySource = Literal["efrsb_json", "efrsb_html"]
+
+
+class IndividualBankruptcyRecord(StrictModel):
+    """Одно дело о банкротстве физического лица."""
+
+    case_number: str | None = None
+    stage_ru: str | None = None
+    stage: str | None = None
+    is_active: bool = True
+    debtor_fio: str | None = None
+    birth_date: DateT | None = None
+    inn: str | None = None
+    snils: str | None = None
+    region: str | None = None
+    match_confidence: IndividualMatchConfidence = "unknown"
+
+
+class IndividualBankruptcyReport(StrictModel):
+    """Ответ для check_individual_bankruptcy."""
+
+    query_fio: str
+    query_birth_date: DateT
+    query_snils: str | None = None
+    query_hash: str = Field(
+        description="sha256(fio_lower|birth_date|snils) — для audit без plain-text ПДн",
+    )
+    has_active_bankruptcy: bool
+    active_cases: list[IndividualBankruptcyRecord] = Field(default_factory=list)
+    total_matches: int = 0
+    source: IndividualBankruptcySource = "efrsb_json"
+    warnings: list[str] = Field(default_factory=list)
+    disclaimer_ru: str = (
+        "Сведения получены из публичного реестра ЕФРСБ (bankrot.fedresurs.ru). "
+        "Это информационная справка, не юридическое заключение о статусе банкрота."
+    )
+    checked_at: datetime
+    source_registry_ru: str = (
+        "Единый федеральный реестр сведений о банкротстве (ЕФРСБ)"
+    )
+    source_url: str = "https://bankrot.fedresurs.ru"
+    data_as_of: str | None = None
+    data_as_of_note_ru: str = "Реестр свою дату обновления не публикует."
+    homonym_warning_ru: str | None = None
+    notice_ru: str = ""
+
+
 class ContractorReport(StrictModel):
     """Агрегированный ответ `check_contractor` — главный тул (SPEC v0.1 §6.2).
 
     Собирает базовую карточку (ЕГРЮЛ), юридический статус (с обогащением из
-    ЕФРСБ) и результат риск-чека (до 8 проверок). Поверх складывает
+    ЕФРСБ) и результат риск-чека (до 7 проверок). Поверх складывает
     детерминированный вердикт `verdict.action` и список human-readable
     рекомендаций для AI-агента. Никакие значения не придумываются:
     если источник недоступен — это фиксируется в `risks.errors` и

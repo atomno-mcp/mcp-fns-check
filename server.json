@@ -7,13 +7,13 @@
     "url": "https://github.com/atomno-mcp/mcp-fns-check",
     "source": "github"
   },
-  "version": "0.1.9",
+  "version": "0.1.10",
   "packages": [
     {
       "registryType": "pypi",
       "registryBaseUrl": "https://pypi.org",
       "identifier": "atomno-mcp-fns-check",
-      "version": "0.1.9",
+      "version": "0.1.10",
       "runtimeHint": "uvx",
       "transport": {
         "type": "stdio"

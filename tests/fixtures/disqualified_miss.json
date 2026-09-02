@@ -1,0 +1,19 @@
+{
+  "dtQueryEnd": "02.08.2026 15:41:21",
+  "pageCount": 1,
+  "dtQueryBegin": "02.08.2026 15:41:21",
+  "data": [],
+  "validPageSizes": [
+    10,
+    25,
+    50
+  ],
+  "reportRowLimit": 0,
+  "pageSize": 25,
+  "queryCount": true,
+  "rowLimit": 100000,
+  "queryHash": -1084349404,
+  "queryTime": 11,
+  "rowCount": 0,
+  "page": 1
+}

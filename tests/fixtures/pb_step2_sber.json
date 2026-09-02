@@ -1,0 +1,36 @@
+{
+  "ul": {
+    "data": [
+      {
+        "periodcode": "12",
+        "namec": "ПАО СБЕРБАНК",
+        "pr_liq": "0",
+        "okopf12": "12247",
+        "yearcode": "2025",
+        "okved2dolyaname": "Денежное посредничество прочее",
+        "regionname": "ГОРОД ФЕДЕРАЛЬНОГО ЗНАЧЕНИЯ МОСКВА",
+        "dtogrn": "16.08.2002",
+        "ogrn": "1027700132195",
+        "okved2dolya": "64.19",
+        "inn": "7707083893",
+        "sulst_name_ex": "Действующая организация",
+        "okved2maintype": "отчетный",
+        "sulst_ex": "10",
+        "predo": "1",
+        "dtreg": "20.06.1991",
+        "okved2main": "64.19",
+        "invalid": "0",
+        "okved2mainname": "Денежное посредничество прочее",
+        "namep": "ПУБЛИЧНОЕ АКЦИОНЕРНОЕ ОБЩЕСТВО \"СБЕРБАНК РОССИИ\"",
+        "puchdocurl": "https://service.nalog.ru/puchdoc/?o=42905098A4CEA793C898D1A704E0650BB9E799076D9126BB201A7AD35FB626AAFB0DC5D46FA24B04BDF92DEBAB45535656F94BDE95B94D3249592451907F6B3B",
+        "gosregurl": "https://service.nalog.ru/gosreg/lk-excerpt.html",
+        "token": "45A52FD40558652883E43F4171393784C33B3AC5DDADB94F6C1E78798480D4D6",
+        "egrulurl": "token=45A52FD40558652883E43F4171393784C33B3AC5DDADB94F6C1E78798480D4D6&inn=7707083893&pdf=vyp"
+      }
+    ],
+    "hasMore": false,
+    "pageSize": 10.0,
+    "rowCount": 1.0,
+    "page": 1.0
+  }
+}

@@ -16,6 +16,7 @@ from pathlib import Path
 
 from .db.cache import SQLiteCache
 from .db.registries import RegistryStore
+from .sources.disqualified import DisqualifiedClient
 from .sources.efrsb import EfrsbClient
 from .sources.egrul import EgrulClient
 from .sources.fssp import FsspClient
@@ -54,6 +55,7 @@ class ServiceContext:
     pb_fns: PbFnsClient | None = None
     fssp: FsspClient | None = None
     kad: KadClient | None = None
+    disqualified: DisqualifiedClient | None = None
     cache_ttl_hours: int = 168
     _entered: bool = field(default=False, init=False, repr=False)
 
@@ -82,6 +84,7 @@ class ServiceContext:
             pb_fns=PbFnsClient(timeout=min(timeout, 10.0), user_agent=ua),
             fssp=FsspClient(timeout=min(timeout, 12.0), user_agent=ua),
             kad=KadClient(timeout=timeout, user_agent=ua),
+            disqualified=DisqualifiedClient(timeout=timeout, user_agent=ua),
             cache_ttl_hours=ttl,
         )
 
@@ -96,6 +99,7 @@ class ServiceContext:
         pb_fns: PbFnsClient | None = None,
         fssp: FsspClient | None = None,
         kad: KadClient | None = None,
+        disqualified: DisqualifiedClient | None = None,
         cache_ttl_hours: int = 168,
     ) -> "ServiceContext":
         return cls(
@@ -106,6 +110,7 @@ class ServiceContext:
             pb_fns=pb_fns,
             fssp=fssp,
             kad=kad,
+            disqualified=disqualified,
             cache_ttl_hours=cache_ttl_hours,
         )
 
@@ -123,6 +128,8 @@ class ServiceContext:
             await self.fssp.__aenter__()
         if self.kad is not None:
             await self.kad.__aenter__()
+        if self.disqualified is not None:
+            await self.disqualified.__aenter__()
         self._entered = True
         return self
 
@@ -137,4 +144,6 @@ class ServiceContext:
             await self.fssp.__aexit__(*exc_info)
         if self.kad is not None:
             await self.kad.__aexit__(*exc_info)
+        if self.disqualified is not None:
+            await self.disqualified.__aexit__(*exc_info)
         self._entered = False

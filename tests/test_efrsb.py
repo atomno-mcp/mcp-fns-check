@@ -12,9 +12,17 @@ from atomno_mcp_fns_check.errors import (
     SourceUnavailableError,
     ValidationError,
 )
-from atomno_mcp_fns_check.sources.efrsb import EFRSB_BASE_URL, EFRSB_SEARCH_PATH, EfrsbClient
+from atomno_mcp_fns_check.sources.efrsb import (
+    EFRSB_BASE_URL,
+    EFRSB_BANKRUPTS_HTML_PATH,
+    EFRSB_BANKRUPTS_PATH,
+    EFRSB_SEARCH_PATH,
+    EfrsbClient,
+)
 
 URL = f"{EFRSB_BASE_URL}{EFRSB_SEARCH_PATH}"
+BANKRUPTS_URL = f"{EFRSB_BASE_URL}{EFRSB_BANKRUPTS_PATH}"
+BANKRUPTS_HTML_URL = f"{EFRSB_BASE_URL}{EFRSB_BANKRUPTS_HTML_PATH}"
 
 
 class TestEfrsbClient:
@@ -108,3 +116,63 @@ class TestEfrsbClient:
                 cases = await c.search_active_by_inn("7707083893")
         assert len(cases) == 1
         assert cases[0].stage == "observation"
+
+
+class TestEfrsbIndividualSearch:
+    async def test_invalid_fio_raises(self):
+        async with EfrsbClient() as c:
+            with pytest.raises(ValidationError):
+                await c.search_active_by_person("X", "1990-01-15")
+
+    async def test_active_person_case(self):
+        payload = {
+            "pageData": [
+                {
+                    "caseNumber": "А41-555/2024",
+                    "stageName": "Конкурсное производство",
+                    "isActive": True,
+                    "lastName": "Петров",
+                    "firstName": "Пётр",
+                    "middleName": "Петрович",
+                    "birthDate": "1985-05-05",
+                }
+            ]
+        }
+        with respx.mock() as m:
+            m.get(BANKRUPTS_URL).mock(return_value=httpx.Response(200, json=payload))
+            async with EfrsbClient() as c:
+                cases, source = await c.search_active_by_person(
+                    "Петров Пётр Петрович",
+                    "1985-05-05",
+                )
+        assert source == "efrsb_json"
+        assert len(cases) == 1
+        assert cases[0].stage == "bankruptcy_proceedings"
+
+    async def test_429_raises_rate_limited(self):
+        with respx.mock() as m:
+            m.get(BANKRUPTS_URL).mock(return_value=httpx.Response(429))
+            async with EfrsbClient() as c:
+                with pytest.raises(RateLimitedError):
+                    await c.search_active_by_person("Иванов Иван Иванович", "1990-01-15")
+
+    async def test_403_antibot(self):
+        with respx.mock() as m:
+            m.get(BANKRUPTS_URL).mock(return_value=httpx.Response(403, text="blocked"))
+            async with EfrsbClient() as c:
+                with pytest.raises(SourceUnavailableError) as exc:
+                    await c.search_active_by_person("Иванов Иван Иванович", "1990-01-15")
+        assert exc.value.details.get("status") == 403
+
+    async def test_html_fallback(self):
+        html = '"pageData":[{"caseNumber":"А41-777/2024","stageName":"Наблюдение","isActive":true}]'
+        with respx.mock() as m:
+            m.get(BANKRUPTS_URL).mock(return_value=httpx.Response(200, content=b"<html/>"))
+            m.get(BANKRUPTS_HTML_URL).mock(return_value=httpx.Response(200, text=html))
+            async with EfrsbClient() as c:
+                cases, source = await c.search_active_by_person(
+                    "Иванов Иван Иванович",
+                    "15.01.1990",
+                )
+        assert source == "efrsb_html"
+        assert len(cases) == 1

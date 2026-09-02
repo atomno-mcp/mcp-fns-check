@@ -1,6 +1,6 @@
 """check_for_red_flags — агрегатор риск-флагов по контрагенту.
 
-S4: реализованы все 8 проверок из SPEC §3.5:
+Проверок семь:
 
   Базовые (S3):
     * `mass_address`            — адрес из реестра массовой регистрации ФНС;
@@ -9,15 +9,20 @@ S4: реализованы все 8 проверок из SPEC §3.5:
     * `bankruptcy_records`      — активные дела в ЕФРСБ.
 
   Расширенные (S4, включаются `include_extended=True`):
-    * `tax_debts`               — индикатор задолженности по налогам
-                                  (Прозрачный бизнес ФНС);
-    * `no_reporting`            — отсутствие налоговой отчётности
-                                  более года (Прозрачный бизнес ФНС);
+    * `tax_debts`               — задолженность по налогам из открытых данных
+                                  ФНС (набор «debtam»);
     * `enforcement_proceedings` — открытые исполнительные производства
                                   в Банке данных ФССП;
     * `active_lawsuits`         — активные арбитражные дела (КАД), в которых
                                   контрагент — ответчик. Опц.фильтр по сумме
                                   иска через `lawsuits_threshold_rub`.
+
+Восьмой проверки — непредставление налоговой отчётности — в наборе нет:
+публичного источника этих сведений не существует (проверено 02.08.2026;
+«Прозрачный бизнес» такой признак не отдаёт, отдельного набора открытых данных
+ФНС нет, веб-раздел закрыт кодом с картинки). Вечно молчащая проверка делала
+вердикт «можно работать» недостижимым для любой, даже идеально чистой компании,
+поэтому она убрана из списка, а не подменена выдуманным «отчётность сдаётся».
 
 Агрегатор:
   1. Запускает все включённые проверки параллельно через
@@ -35,11 +40,14 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 from ..context import ServiceContext
+from ..db.registries import RegistryStatus
 from ..errors import McpFnsError, ValidationError
 from ..schemas import (
+    CheckCoverage,
     CheckError,
     FlagCode,
     FlagDetail,
+    OverallRiskLevel,
     RedFlagsReport,
     RiskLevel,
 )
@@ -55,7 +63,6 @@ FLAG_WEIGHTS: dict[FlagCode, dict[RiskLevel, int]] = {
     "disqualified_director": {"low": 0, "medium": 20, "high": 30},
     "bankruptcy_records": {"low": 10, "medium": 25, "high": 40},
     "tax_debts": {"low": 5, "medium": 15, "high": 25},
-    "no_reporting": {"low": 10, "medium": 20, "high": 30},
     "enforcement_proceedings": {"low": 5, "medium": 15, "high": 25},
     "active_lawsuits": {"low": 5, "medium": 15, "high": 25},
 }
@@ -69,20 +76,110 @@ class _CheckResult:
     error: CheckError | None
 
 
+def _registry_empty_error(code: FlagCode, registry_label_ru: str) -> CheckError:
+    """Реестр подключён, но локальная база пуста — данные ФНС ещё не загружены.
+
+    Отличаем от «реестр не подключён» (skipped_reason) и от «проверили —
+    совпадений нет» (чистый _CheckResult): здесь мы физически не можем дать
+    достоверный ответ, поэтому это ошибка (`errors[]`), а не тихое «риска нет».
+    См. `C:/Users/Velcat/.cursor/rules/service-response-honesty.mdc`.
+    """
+    return CheckError(
+        code=code,
+        error="registry_empty",
+        message_ru=(
+            f"Локальная база реестра {registry_label_ru} ФНС на сервере пуста — "
+            "загрузка данных ещё не выполнена. Проверка не может дать достоверный "
+            "ответ: риск не подтверждён и не исключён."
+        ),
+    )
+
+
+def _registry_stale_error(
+    code: FlagCode, registry_label_ru: str, status: RegistryStatus
+) -> CheckError:
+    """Реестр загружен, но данные ФНС устарели.
+
+    Отрицательный результат поиска по устаревшей выгрузке ничего не доказывает:
+    компания могла попасть в реестр уже после даты выгрузки. Поэтому «совпадений
+    нет» здесь запрещено — только «не проверено» с указанием даты данных.
+    """
+    age = f"{status.age_days} дн." if status.age_days is not None else "неизвестно сколько"
+    return CheckError(
+        code=code,
+        error="registry_stale",
+        message_ru=(
+            f"Данные реестра {registry_label_ru} ФНС устарели: выгрузка от "
+            f"{status.data_as_of_ru}, ей уже {age} (допустимо "
+            f"{status.stale_after_days} дн.). Отсутствие совпадения ничего не "
+            "доказывает — компания могла попасть в реестр позже. Проверка "
+            "не выполнена."
+        ),
+    )
+
+
+async def _registry_negative_result(
+    ctx: ServiceContext, code: FlagCode, registry: str, label_ru: str
+) -> _CheckResult:
+    """Как трактовать «в реестре не нашли».
+
+    Достоверное «чисто» возможно только если реестр наполнен и свеж. Иначе —
+    честная ошибка «не проверено».
+    """
+    assert ctx.registries is not None  # noqa: S101 — вызывается только после проверки
+    status = await ctx.registries.registry_status(registry)
+    if status.is_empty:
+        return _CheckResult(code, None, None, _registry_empty_error(code, label_ru))
+    if status.is_stale:
+        return _CheckResult(code, None, None, _registry_stale_error(code, label_ru, status))
+    return _CheckResult(code, None, None, None)
+
+
+async def _registry_data_note(ctx: ServiceContext, registry: str) -> str | None:
+    """Пометка «по данным ФНС от <дата>» для положительного совпадения."""
+    if ctx.registries is None:
+        return None
+    status = await ctx.registries.registry_status(registry)
+    if status.data_as_of is None:
+        return None
+    return status.data_as_of_ru
+
+
 # --- 4 проверки ---
 
 
-async def check_mass_address(ctx: ServiceContext, hit: EgrulSearchHit) -> _CheckResult:
+async def check_mass_address(
+    ctx: ServiceContext,
+    hit: EgrulSearchHit,
+    *,
+    address: str | None = None,
+) -> _CheckResult:
     code: FlagCode = "mass_address"
     if ctx.registries is None:
         return _CheckResult(code, None, "Реестр массовых адресов не подключён.", None)
-    if not hit.address:
-        return _CheckResult(code, None, "Адрес контрагента отсутствует в карточке ЕГРЮЛ.", None)
 
-    match = await ctx.registries.lookup_mass_address(hit.address)
+    lookup_address = (address or hit.address or "").strip()
+    if not lookup_address:
+        # Поиск ЕГРЮЛ (`egrul.nalog.ru/search-result`) отдаёт только регион,
+        # без юр.адреса. Проверить адрес можно, только если его передал
+        # вызывающий (например, из договора или платёжных реквизитов).
+        return _CheckResult(
+            code,
+            None,
+            (
+                "Юридический адрес неизвестен: поиск ЕГРЮЛ его не возвращает, "
+                "а в запросе адрес не передан. Проверка по реестру массовых "
+                "адресов не выполнялась — передайте адрес контрагента, чтобы "
+                "она отработала."
+            ),
+            None,
+        )
+
+    match = await ctx.registries.lookup_mass_address(lookup_address)
     if match is None:
-        return _CheckResult(code, None, None, None)
+        return await _registry_negative_result(ctx, code, "mass_addresses", "массовых адресов")
 
+    data_as_of = await _registry_data_note(ctx, "mass_addresses")
     count = match.registered_entities_count
     level: RiskLevel = "high" if count >= 30 else "medium" if count >= 5 else "low"
     return _CheckResult(
@@ -92,12 +189,15 @@ async def check_mass_address(ctx: ServiceContext, hit: EgrulSearchHit) -> _Check
             level=level,
             message_ru=(
                 f"Адрес контрагента включён ФНС в реестр массовой регистрации: "
-                f"по этому адресу зарегистрировано {count} юр.лиц."
+                f"по этому адресу зарегистрировано {count} юр.лиц"
+                + (f" (по данным ФНС от {data_as_of})" if data_as_of else "")
+                + "."
             ),
             details={
                 "address_raw": match.address_raw,
                 "registered_entities_count": count,
                 "fns_inclusion_date": match.fns_inclusion_date,
+                "registry_data_as_of": data_as_of,
             },
         ),
         None,
@@ -120,83 +220,6 @@ async def check_mass_director(ctx: ServiceContext, hit: EgrulSearchHit) -> _Chec
 
     director_name = (hit.director_name or "").strip()
 
-    if director_inn:
-        match = await ctx.registries.lookup_mass_director(director_inn)
-        if match is None:
-            return _CheckResult(code, None, None, None)
-        count = match.companies_count
-        level: RiskLevel = "high" if count >= 10 else "medium" if count >= 5 else "low"
-        return _CheckResult(
-            code,
-            FlagDetail(
-                code=code,
-                level=level,
-                message_ru=(
-                    f"Руководитель {match.full_name or '(без ФИО)'} включён в реестр "
-                    f"массовых руководителей ФНС: {count} действующих компаний."
-                ),
-                details={
-                    "director_inn_masked": _mask_personal_inn(director_inn),
-                    "companies_count": count,
-                    "match_precision": "exact_inn",
-                    "fns_inclusion_date": match.fns_inclusion_date,
-                },
-            ),
-            None,
-            None,
-        )
-
-    if director_name:
-        match = await ctx.registries.lookup_mass_director(full_name=director_name)
-        if match is None:
-            return _CheckResult(code, None, None, None)
-        count = match.companies_count
-        level = "high" if count >= 10 else "medium" if count >= 5 else "low"
-        return _CheckResult(
-            code,
-            FlagDetail(
-                code=code,
-                level=level,
-                message_ru=(
-                    f"Совпадение по ФИО руководителя ({director_name}) с реестром "
-                    f"массовых руководителей ФНС: {count} компаний. "
-                    f"Совпадение приблизительное (без ИНН), требует ручной верификации."
-                ),
-                details={
-                    "director_name": director_name,
-                    "companies_count": count,
-                    "match_precision": "approximate_name_only",
-                },
-            ),
-            None,
-            None,
-        )
-
-    return _CheckResult(
-        code,
-        None,
-        "ИНН и ФИО руководителя отсутствуют в карточке ЕГРЮЛ.",
-        None,
-    )
-
-
-async def check_disqualified_director(
-    ctx: ServiceContext, hit: EgrulSearchHit
-) -> _CheckResult:
-    code: FlagCode = "disqualified_director"
-    if ctx.registries is None:
-        return _CheckResult(code, None, "Реестр дисквалифицированных не подключён.", None)
-
-    director_inn: str | None = None
-    raw = hit.raw or {}
-    for key in ("director_inn", "directorInn", "managerInn", "g_inn", "gi"):
-        value = raw.get(key)
-        if isinstance(value, str) and value.strip():
-            director_inn = value.strip()
-            break
-
-    director_name = (hit.director_name or "").strip() or None
-
     if not director_inn and not director_name:
         return _CheckResult(
             code,
@@ -205,16 +228,73 @@ async def check_disqualified_director(
             None,
         )
 
-    matches = await ctx.registries.lookup_disqualified(
-        inn=director_inn,
-        full_name=director_name,
+    if director_inn:
+        match = await ctx.registries.lookup_mass_director(director_inn)
+        precision = "exact_inn"
+    else:
+        match = await ctx.registries.lookup_mass_director(full_name=director_name)
+        precision = "approximate_name_only"
+
+    if match is None:
+        return await _registry_negative_result(
+            ctx, code, "mass_directors", "массовых руководителей и учредителей"
+        )
+
+    data_as_of = await _registry_data_note(ctx, "mass_directors")
+    count = match.companies_count
+    level: RiskLevel = "high" if count >= 10 else "medium" if count >= 5 else "low"
+    who = f"{match.role_title.capitalize()} {match.full_name or director_name or '(без ФИО)'}"
+    approximate = (
+        " Совпадение приблизительное (по ФИО, без ИНН), требует ручной верификации."
+        if precision == "approximate_name_only"
+        else ""
     )
-    if not matches:
+    return _CheckResult(
+        code,
+        FlagDetail(
+            code=code,
+            level=level,
+            message_ru=(
+                f"{who} включён в реестр {match.registry_title_ru} ФНС: "
+                f"{count} компаний"
+                + (f" (по данным ФНС от {data_as_of})" if data_as_of else "")
+                + "."
+                + approximate
+            ),
+            details={
+                "director_inn_masked": _mask_personal_inn(director_inn) if director_inn else None,
+                "director_name": match.full_name or director_name or None,
+                "role": match.role,
+                "companies_count": count,
+                "match_precision": precision,
+                "fns_inclusion_date": match.fns_inclusion_date,
+                "registry_data_as_of": data_as_of,
+            },
+        ),
+        None,
+        None,
+    )
+
+
+async def check_disqualified_director(
+    ctx: ServiceContext, hit: EgrulSearchHit
+) -> _CheckResult:
+    code: FlagCode = "disqualified_director"
+    if ctx.disqualified is None:
+        return _CheckResult(
+            code, None, "Клиент реестра дисквалифицированных лиц не подключён.", None
+        )
+    if not hit.inn:
+        return _CheckResult(code, None, "ИНН контрагента не определён.", None)
+
+    # Ищем по ИНН организации: реестр ФНС хранит связку «человек ↔ организация»,
+    # и именно организация — предмет проверки. Поиск по ФИО без ИНН даёт
+    # однофамильцев, поэтому как основной путь не используется.
+    records = await ctx.disqualified.search_by_company_inn(hit.inn)
+    if not records:
         return _CheckResult(code, None, None, None)
 
-    today = datetime.now(tz=timezone.utc).date().isoformat()
-    active = [m for m in matches if not m.disqualification_until or m.disqualification_until >= today]
-
+    active = [r for r in records if r.is_active]
     if not active:
         return _CheckResult(
             code,
@@ -222,35 +302,44 @@ async def check_disqualified_director(
                 code=code,
                 level="medium",
                 message_ru=(
-                    "У руководителя есть истёкшая дисквалификация в реестре ФНС. "
-                    "Срок наказания закончился, но факт нарушения зафиксирован."
+                    "В управлении контрагента есть лицо с истёкшей дисквалификацией "
+                    "(реестр ФНС). Срок наказания закончился, но факт нарушения "
+                    "зафиксирован."
                 ),
                 details={
-                    "matches_count": len(matches),
+                    "matches_count": len(records),
                     "active_disqualifications": 0,
-                    "match_precision": "exact_inn" if director_inn else "approximate_name_only",
+                    "match_precision": "exact_company_inn",
+                    "source": "service.nalog.ru/disqualified",
                 },
             ),
             None,
             None,
         )
 
+    first = active[0]
     return _CheckResult(
         code,
         FlagDetail(
             code=code,
             level="high",
             message_ru=(
-                f"Руководитель находится в реестре дисквалифицированных лиц ФНС "
-                f"({len(active)} активных дисквалификаций). Заключение договора "
-                f"с компанией под его управлением запрещено законом."
+                f"В управлении контрагента — дисквалифицированное лицо "
+                f"({first.full_name or 'ФИО не указано'}, "
+                f"{(first.position or 'должность не указана').lower()}), "
+                f"действующих записей: {len(active)}. Заключение договора с "
+                f"компанией под его управлением запрещено законом."
             ),
             details={
-                "matches_count": len(matches),
+                "matches_count": len(records),
                 "active_disqualifications": len(active),
-                "first_disqualification_date": active[0].disqualification_date,
-                "first_disqualification_until": active[0].disqualification_until,
-                "match_precision": "exact_inn" if director_inn else "approximate_name_only",
+                "person_name": first.full_name,
+                "position": first.position,
+                "disqualification_from": first.disqualification_from,
+                "disqualification_until": first.disqualification_until,
+                "reason": first.reason,
+                "match_precision": "exact_company_inn",
+                "source": "service.nalog.ru/disqualified",
             },
         ),
         None,
@@ -298,61 +387,59 @@ async def check_bankruptcy_records(
 
 
 async def check_tax_debts(ctx: ServiceContext, hit: EgrulSearchHit) -> _CheckResult:
-    """Проверка наличия задолженности по налогам через Прозрачный бизнес ФНС."""
+    """Задолженность по налогам — из набора открытых данных ФНС `debtam`.
+
+    Раньше признак пытались взять из «Прозрачного бизнеса»; в его ответе такого
+    поля нет вообще, поэтому проверка всегда отвечала «долгов нет». Источник
+    заменён на `debtam` (таблица `tax_debts` локальных реестров).
+    """
     code: FlagCode = "tax_debts"
-    if ctx.pb_fns is None:
-        return _CheckResult(code, None, "Клиент Прозрачного бизнеса не подключён.", None)
+    if ctx.registries is None:
+        return _CheckResult(code, None, "Реестр налоговой задолженности не подключён.", None)
     if not hit.inn:
         return _CheckResult(code, None, "ИНН контрагента не определён.", None)
 
-    tags = await ctx.pb_fns.get_tags_by_inn(hit.inn)
-    if not tags.has_tax_debt:
-        return _CheckResult(code, None, None, None)
+    match = await ctx.registries.lookup_tax_debt(hit.inn)
+    if match is None:
+        return await _registry_negative_result(
+            ctx, code, "tax_debts", "налоговой задолженности (debtam)"
+        )
 
+    data_as_of = await _registry_data_note(ctx, "tax_debts")
+    total = match.total_debt_rub + match.penalty_rub + match.fine_rub
+    if total >= 1_000_000:
+        level: RiskLevel = "high"
+    elif total >= 100_000:
+        level = "medium"
+    else:
+        level = "low"
+
+    top_taxes = sorted(
+        (t for t in match.taxes if isinstance(t, dict)),
+        key=lambda t: float(t.get("debt") or 0),
+        reverse=True,
+    )[:5]
     return _CheckResult(
         code,
         FlagDetail(
             code=code,
-            level="medium",
+            level=level,
             message_ru=(
-                "Прозрачный бизнес ФНС сообщает о задолженности контрагента "
-                "по уплате налогов и сборов. Точная сумма доступна на pb.nalog.ru."
+                f"ФНС публикует задолженность контрагента: недоимка "
+                f"{_rub(match.total_debt_rub)}, пени {_rub(match.penalty_rub)}, "
+                f"штрафы {_rub(match.fine_rub)}; всего {_rub(total)}"
+                + (f" (данные ФНС от {data_as_of})" if data_as_of else "")
+                + "."
             ),
             details={
-                "source": "pb.nalog.ru",
-                "indicator_present": True,
-            },
-        ),
-        None,
-        None,
-    )
-
-
-async def check_no_reporting(ctx: ServiceContext, hit: EgrulSearchHit) -> _CheckResult:
-    """Проверка непредставления налоговой отчётности > 1 года (Прозрачный бизнес)."""
-    code: FlagCode = "no_reporting"
-    if ctx.pb_fns is None:
-        return _CheckResult(code, None, "Клиент Прозрачного бизнеса не подключён.", None)
-    if not hit.inn:
-        return _CheckResult(code, None, "ИНН контрагента не определён.", None)
-
-    tags = await ctx.pb_fns.get_tags_by_inn(hit.inn)
-    if not tags.has_no_reporting:
-        return _CheckResult(code, None, None, None)
-
-    return _CheckResult(
-        code,
-        FlagDetail(
-            code=code,
-            level="high",
-            message_ru=(
-                "По данным Прозрачного бизнеса ФНС контрагент не представляет "
-                "налоговую отчётность более одного года. Это серьёзный признак "
-                "технической / неработающей компании."
-            ),
-            details={
-                "source": "pb.nalog.ru",
-                "indicator_present": True,
+                "source": "ФНС, открытые данные «debtam»",
+                "org_name": match.org_name,
+                "debt_rub": match.total_debt_rub,
+                "penalty_rub": match.penalty_rub,
+                "fine_rub": match.fine_rub,
+                "total_rub": total,
+                "top_taxes": top_taxes,
+                "registry_data_as_of": data_as_of,
             },
         ),
         None,
@@ -485,6 +572,11 @@ async def check_active_lawsuits(
 # --- утилиты ---
 
 
+def _rub(value: float) -> str:
+    """Рубли в читаемом виде: 1234567.89 → «1 234 568 ₽»."""
+    return f"{int(round(value)):,} ₽".replace(",", " ")
+
+
 def _mask_personal_inn(inn: str) -> str:
     inn = inn.strip()
     if len(inn) == 12 and inn.isdigit():
@@ -492,17 +584,27 @@ def _mask_personal_inn(inn: str) -> str:
     return inn
 
 
-def _level_from_score(score: int) -> RiskLevel:
+def _level_from_score(score: int, coverage: CheckCoverage) -> OverallRiskLevel:
+    """Итоговый уровень риска с учётом того, все ли проверки отработали.
+
+    «Низкий риск» разрешён только когда ответили ВСЕ проверки. Если хоть одна
+    промолчала, уровень — «не определён»: сказать «низкий», не проверив половину
+    источников, значит подтолкнуть клиента к сделке на пустоте.
+    Найденный риск при этом никуда не девается: high/medium выставляются
+    независимо от полноты покрытия.
+    """
     if score >= 50:
         return "high"
     if score >= 25:
         return "medium"
-    return "low"
+    if coverage.is_complete:
+        return "low"
+    return "unknown"
 
 
-def _summarise(flags: list[FlagDetail], level: RiskLevel, errors: int, skipped: int) -> str:
-    if not flags and errors == 0 and skipped == 0:
-        return "Риск-флагов не обнаружено по проверенным источникам."
+def _summarise(
+    flags: list[FlagDetail], level: OverallRiskLevel, coverage: CheckCoverage
+) -> str:
     parts: list[str] = []
     if flags:
         high = sum(1 for f in flags if f.level == "high")
@@ -516,18 +618,37 @@ def _summarise(flags: list[FlagDetail], level: RiskLevel, errors: int, skipped: 
         if low:
             descr.append(f"{low} низких")
         parts.append(f"Найдено флагов: {', '.join(descr)}.")
-    parts.append(f"Итоговый уровень риска: {_RU_LEVEL[level]}.")
-    if errors:
-        parts.append(f"Не удалось выполнить проверок: {errors} (см. errors).")
-    if skipped:
-        parts.append(f"Проверок пропущено: {skipped} (нет данных, см. checks_skipped).")
+
+    parts.append(
+        f"Проверок выполнено: {coverage.answered} из {coverage.total}."
+        if coverage.total
+        else "Проверки не выполнялись."
+    )
+
+    if level == "unknown":
+        parts.append(
+            "Итоговый уровень риска не определён: часть проверок не отработала, "
+            "поэтому «низкий риск» показывать нельзя."
+        )
+    else:
+        parts.append(f"Итоговый уровень риска: {_RU_LEVEL[level]}.")
+
+    if coverage.failed:
+        parts.append(f"Не удалось выполнить проверок: {coverage.failed} (см. errors).")
+    if coverage.skipped:
+        parts.append(
+            f"Проверок пропущено: {coverage.skipped} (нет входных данных, см. checks_skipped)."
+        )
+    if level == "low":
+        parts.append("Все источники ответили, риск-флагов нет.")
     return " ".join(parts)
 
 
-_RU_LEVEL: dict[RiskLevel, str] = {
+_RU_LEVEL: dict[OverallRiskLevel, str] = {
     "low": "низкий",
     "medium": "средний",
     "high": "высокий",
+    "unknown": "не определён",
 }
 
 
@@ -540,17 +661,23 @@ async def check_for_red_flags(
     *,
     include_extended: bool = False,
     lawsuits_threshold_rub: float | None = None,
+    address: str | None = None,
 ) -> RedFlagsReport:
     """Полный отчёт по риск-флагам контрагента.
 
     Аргументы:
         inn: ИНН контрагента (10 или 12 цифр).
-        include_extended: добавить 4 расширенные проверки (Прозрачный бизнес,
-            ФССП, КАД). По умолчанию False — выполняются только базовые 4
-            проверки на основе ЕГРЮЛ + ЕФРСБ + локальных реестров.
+        include_extended: добавить 3 расширенные проверки (налоговые долги из
+            открытых данных ФНС, ФССП, КАД). По умолчанию False — выполняются
+            только базовые 4 проверки на основе ЕГРЮЛ + ЕФРСБ + локальных
+            реестров.
         lawsuits_threshold_rub: порог фильтра для активных арбитражных дел
             (рубли). Если не задан — учитываются все дела где контрагент
             ответчик. Полезно для отсечения мелких споров.
+        address: юридический адрес контрагента для проверки по реестру
+            массовых адресов. Поиск ЕГРЮЛ адрес не отдаёт, поэтому без
+            этого аргумента проверка `mass_address` честно помечается
+            невыполненной, а не «чисто».
     """
     if not is_valid_inn(inn):
         raise ValidationError(f"Невалидный ИНН '{inn}'", details={"input": inn})
@@ -558,7 +685,7 @@ async def check_for_red_flags(
     hit, _ = await _fetch_hit(ctx, by="inn", value=inn)
 
     base_coros = [
-        check_mass_address(ctx, hit),
+        check_mass_address(ctx, hit, address=address),
         check_mass_director(ctx, hit),
         check_disqualified_director(ctx, hit),
         check_bankruptcy_records(ctx, hit),
@@ -574,7 +701,6 @@ async def check_for_red_flags(
         base_coros.extend(
             [
                 check_tax_debts(ctx, hit),
-                check_no_reporting(ctx, hit),
                 check_enforcement_proceedings(ctx, hit),
                 check_active_lawsuits(ctx, hit, threshold_rub=lawsuits_threshold_rub),
             ]
@@ -582,7 +708,6 @@ async def check_for_red_flags(
         expected_codes.extend(
             [
                 "tax_debts",
-                "no_reporting",
                 "enforcement_proceedings",
                 "active_lawsuits",
             ]
@@ -619,15 +744,24 @@ async def check_for_red_flags(
         passed.append(code)
 
     score = min(score, 100)
-    overall = _level_from_score(score)
+    coverage = CheckCoverage(
+        total=len(expected_codes),
+        answered=len(flags) + len(passed),
+        flagged=len(flags),
+        clean=len(passed),
+        skipped=len(skipped),
+        failed=len(errors),
+    )
+    overall = _level_from_score(score, coverage)
     return RedFlagsReport(
         inn=inn,
         overall_risk_level=overall,
         overall_risk_score=score,
-        summary_ru=_summarise(flags, overall, len(errors), len(skipped)),
+        summary_ru=_summarise(flags, overall, coverage),
         flags=flags,
         checks_passed=passed,
         checks_skipped=skipped,
         errors=errors,
+        coverage=coverage,
         checked_at=datetime.now(tz=timezone.utc),
     )
