@@ -145,6 +145,7 @@ class OkvedReport(StrictModel):
     additional_okveds: list[OkvedInfo] = Field(default_factory=list)
     total_count: int = 0
     history: list[dict] | None = None
+    warnings: list[str] = Field(default_factory=list)
 
 
 # --- Red flags ---

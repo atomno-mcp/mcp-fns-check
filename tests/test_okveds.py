@@ -87,6 +87,11 @@ class TestBuildReport:
         report = build_okved_report(self._hit(None, None))
         assert report.main_okved is None
         assert report.total_count == 0
+        assert report.warnings == []
+
+    def test_warnings_pass_through(self):
+        report = build_okved_report(self._hit(None, None), warnings=["нет кода"])
+        assert report.warnings == ["нет кода"]
 
     def test_additional_codes_dedup_and_count(self):
         report = build_okved_report(

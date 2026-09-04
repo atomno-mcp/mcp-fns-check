@@ -6,6 +6,9 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
+
 import httpx
 import pytest
 import respx
@@ -15,6 +18,7 @@ from atomno_mcp_fns_check.db.cache import SQLiteCache
 from atomno_mcp_fns_check.errors import NotFoundError, ValidationError
 from atomno_mcp_fns_check.sources.efrsb import EfrsbClient
 from atomno_mcp_fns_check.sources.egrul import EGRUL_BASE_URL, EgrulClient
+from atomno_mcp_fns_check.sources.pb_fns import PbFnsClient
 from atomno_mcp_fns_check.tools.check import check_inn, check_ogrn, get_okveds
 
 TOKEN = "tok"
@@ -103,10 +107,11 @@ class TestGetOkveds:
         with respx.mock() as m:
             _mock_egrul(m, SBER)
             report = await get_okveds(ctx, inn="7707083893")
-        assert report.main_okved is not None
-        assert report.main_okved.code == "64.19"
-        assert report.main_okved.is_licensable is True
-        assert report.total_count == 1
+            assert report.main_okved is not None
+            assert report.main_okved.code == "64.19"
+            assert report.main_okved.is_licensable is True
+            assert report.total_count == 1
+            assert report.warnings == []
 
     async def test_requires_inn_or_ogrn(self, ctx: ServiceContext):
         with pytest.raises(ValidationError):
@@ -120,3 +125,49 @@ class TestGetOkveds:
             report = await get_okveds(ctx, inn="7707083893")
             assert route.call_count == calls_after_first
             assert report.main_okved is not None
+            assert report.warnings == []
+
+    async def test_empty_okved_from_egrul_is_warned(self, ctx: ServiceContext):
+        silent = {"rows": [{k: v for k, v in SBER["rows"][0].items() if k not in {"e", "eName"}}]}
+        with respx.mock() as m:
+            _mock_egrul(m, silent)
+            report = await get_okveds(ctx, inn="7707083893")
+        assert report.main_okved is None
+        assert report.total_count == 0
+        assert report.warnings
+        assert any("не доказательство" in w for w in report.warnings)
+
+    async def test_pb_fallback_fills_okved_when_egrul_omits_it(self, tmp_path):
+        fixtures = Path(__file__).parent / "fixtures"
+        step1 = json.loads(fixtures.joinpath("pb_step1_token.json").read_text(encoding="utf-8"))
+        step2 = json.loads(fixtures.joinpath("pb_step2_sber.json").read_text(encoding="utf-8"))
+
+        def handler(request: httpx.Request) -> httpx.Response:
+            form = dict(httpx.QueryParams(request.content.decode()))
+            if form.get("method") == "get-response":
+                return httpx.Response(200, json=step2)
+            return httpx.Response(200, json=step1)
+
+        pb = PbFnsClient(
+            client=httpx.AsyncClient(
+                transport=httpx.MockTransport(handler),
+                base_url="https://pb.nalog.ru",
+            ),
+            poll_delay=0.0,
+        )
+        cache = SQLiteCache(tmp_path / "cache.sqlite", default_ttl_hours=24)
+        egrul = EgrulClient(backoff_base=0.0)
+        efrsb = EfrsbClient()
+        ctx = ServiceContext.for_testing(egrul=egrul, efrsb=efrsb, cache=cache, pb_fns=pb)
+        silent = {"rows": [{k: v for k, v in SBER["rows"][0].items() if k not in {"e", "eName"}}]}
+        await ctx.__aenter__()
+        try:
+            with respx.mock() as m:
+                _mock_egrul(m, silent)
+                report = await get_okveds(ctx, inn="7707083893")
+        finally:
+            await ctx.__aexit__(None, None, None)
+
+        assert report.main_okved is not None
+        assert report.main_okved.code == "64.19"
+        assert not any("не доказательство" in w for w in report.warnings)

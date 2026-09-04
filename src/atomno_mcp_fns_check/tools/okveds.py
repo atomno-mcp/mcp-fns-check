@@ -80,6 +80,7 @@ def build_okved_report(
     hit: EgrulSearchHit,
     *,
     additional_codes: list[str] | None = None,
+    warnings: list[str] | None = None,
 ) -> OkvedReport:
     """Собрать ответ для get_okveds.
 
@@ -110,4 +111,5 @@ def build_okved_report(
         additional_okveds=additional,
         total_count=total,
         history=None,
+        warnings=list(warnings or []),
     )

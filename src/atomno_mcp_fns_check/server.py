@@ -29,7 +29,6 @@ import atexit
 import importlib.resources as importlib_resources
 import logging
 import os
-from pathlib import Path
 from typing import Any
 
 from fastmcp import FastMCP
@@ -37,6 +36,7 @@ from fastmcp import FastMCP
 from . import __version__
 from .context import ServiceContext
 from .errors import McpFnsError
+from .paths import default_cache_db_path
 from .tools import check_contractor as _check_contractor_impl
 from .tools import check_for_red_flags as _check_for_red_flags_impl
 from .tools import check_individual_bankruptcy as _check_individual_bankruptcy_impl
@@ -371,7 +371,7 @@ async def check_individual_bankruptcy(
 
 
 def _cache_db_path() -> str:
-    return os.environ.get("MCP_FNS_CACHE_DB", str(Path.cwd() / "atomno_mcp_fns_check_cache.sqlite"))
+    return os.environ.get("MCP_FNS_CACHE_DB", str(default_cache_db_path()))
 
 
 # Список транспортов FastMCP, которые мы допускаем в публичном CLI. Он

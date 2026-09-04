@@ -4,6 +4,19 @@
 
 Формат — [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/), версионирование — [SemVer](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [0.1.11] — 2026-09-04
+
+### Fixed
+
+- `get_okveds`: если основной источник не отдал код, пробуется карточка «Прозрачного бизнеса»; если кода нет — в ответе есть `warnings`.
+- Файл кэша по умолчанию пишется в каталог данных пользователя.
+
+### Changed
+
+- В README явно описано, какие источники часто недоступны автоматически (ЕФРСБ, ФССП, КАД) и что уровень риска при неполном покрытии — «не определён». Автоматическая проверка банкротства часто не выполняется из-за защиты источника; это не означает, что банкротства нет.
+
 ## [0.1.10] — 2026-09-02
 
 ### Added
@@ -110,6 +123,8 @@
 
 ---
 
-[Unreleased]: https://github.com/atomno-mcp/mcp-fns-check/compare/v0.1.1...HEAD
+[Unreleased]: https://github.com/atomno-mcp/mcp-fns-check/compare/v0.1.11...HEAD
+[0.1.11]: https://github.com/atomno-mcp/mcp-fns-check/releases/tag/v0.1.11
+[0.1.10]: https://github.com/atomno-mcp/mcp-fns-check/releases/tag/v0.1.10
 [0.1.1]: https://github.com/atomno-mcp/mcp-fns-check/releases/tag/v0.1.1
 [0.1.0]: https://github.com/atomno-mcp/mcp-fns-check/releases/tag/v0.1.0

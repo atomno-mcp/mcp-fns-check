@@ -16,6 +16,7 @@ from pathlib import Path
 
 from .db.cache import SQLiteCache
 from .db.registries import RegistryStore
+from .paths import default_cache_db_path
 from .sources.disqualified import DisqualifiedClient
 from .sources.efrsb import EfrsbClient
 from .sources.egrul import EgrulClient
@@ -64,7 +65,7 @@ class ServiceContext:
         """Собрать контекст из переменных окружения (см. .env.example)."""
         cache_db = os.environ.get(
             "MCP_FNS_CACHE_DB",
-            str(Path.cwd() / "atomno_mcp_fns_check_cache.sqlite"),
+            str(default_cache_db_path()),
         )
         registries_db = os.environ.get(
             "MCP_FNS_REGISTRIES_DB",

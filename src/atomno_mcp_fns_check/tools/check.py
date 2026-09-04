@@ -10,12 +10,12 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from typing import Literal
 
 from ..context import ServiceContext
 from ..db.cache import SQLiteCache
-from ..errors import NotFoundError, ValidationError
+from ..errors import McpFnsError, NotFoundError, ValidationError
 from ..schemas import CounterpartyCard, OkvedReport
 from ..sources.egrul import EgrulSearchHit
 from ..validators import is_valid_inn, is_valid_ogrn
@@ -96,7 +96,12 @@ async def get_okveds(
     ogrn: str | None = None,
     include_history: bool = False,
 ) -> OkvedReport:
-    """Расшифровка ОКВЭД основной + дополнительные (на S2 — только основной)."""
+    """Расшифровка ОКВЭД основной + дополнительные.
+
+    Если поиск ЕГРЮЛ не отдал код, пробуем карточку «Прозрачного бизнеса».
+    Пустой список без `warnings` не возвращаем: отсутствие кода в выдаче
+    поиска неотличимо от «у компании нет видов деятельности».
+    """
     if not inn and not ogrn:
         raise ValidationError("Нужно передать хотя бы один из 'inn' или 'ogrn'.")
     if inn is not None and not is_valid_inn(inn):
@@ -108,4 +113,42 @@ async def get_okveds(
     value = inn or ogrn
     assert value is not None
     hit, _ = await _fetch_hit(ctx, by=by, value=value)
-    return build_okved_report(hit, additional_codes=None)
+    warnings: list[str] = []
+    if include_history:
+        warnings.append(
+            "История изменений ОКВЭД в этом режиме недоступна: поиск ЕГРЮЛ "
+            "отдаёт только текущий основной код, если отдаёт его вообще."
+        )
+
+    if not hit.okved_code and ctx.pb_fns is not None and hit.inn:
+        try:
+            card = await ctx.pb_fns.get_company_card(hit.inn)
+        except McpFnsError as exc:
+            warnings.append(
+                "Запасной запрос в «Прозрачный бизнес» не удался: "
+                f"{exc.message_ru}"
+            )
+        else:
+            if card is not None and card.okved:
+                hit = replace(
+                    hit,
+                    okved_code=card.okved,
+                    okved_name=card.okved_name or hit.okved_name,
+                )
+            elif card is None:
+                warnings.append(
+                    "«Прозрачный бизнес» не нашёл карточку по этому ИНН — "
+                    "коды ОКВЭД из этого источника взять не удалось."
+                )
+            else:
+                warnings.append(
+                    "Карточка «Прозрачного бизнеса» есть, но кода ОКВЭД в ней нет."
+                )
+
+    if not hit.okved_code:
+        warnings.append(
+            "Источник не вернул код ОКВЭД в карточке поиска. Пустой список — "
+            "не доказательство, что видов деятельности нет: у действующей "
+            "организации они почти всегда есть."
+        )
+    return build_okved_report(hit, additional_codes=None, warnings=warnings)
