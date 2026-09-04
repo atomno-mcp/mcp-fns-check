@@ -281,6 +281,74 @@ class TestRegistryFreshness:
         assert result.flag.details["registry_data_as_of"]
         assert "по данным ФНС от" in result.flag.message_ru
 
+    async def test_training_sample_match_is_not_a_flag(self, tmp_path):
+        """Учебный набор не даёт ни флага, ни «чисто» — даже при совпадении строки."""
+        registries = RegistryStore(tmp_path / "seed.sqlite")
+        await registries.init()
+        from importlib.resources import as_file, files
+
+        with as_file(files("atomno_mcp_fns_check.data").joinpath("registries_seed.json")) as seed:
+            await registries.load_seed(seed)
+        c = await _make_ctx(tmp_path, registries=registries)
+        async with c:
+            result = await check_mass_address(
+                c, _hit(address="TRAINING-SAMPLE, г Тестоград, ул Учебная, д 1")
+            )
+        assert result.flag is None
+        assert result.error is not None
+        assert result.error.error == "registry_unavailable"
+        assert "не загружена" in result.error.message_ru
+
+    async def test_training_sample_director_is_not_a_flag(self, tmp_path):
+        registries = RegistryStore(tmp_path / "seed.sqlite")
+        await registries.init()
+        from importlib.resources import as_file, files
+
+        with as_file(files("atomno_mcp_fns_check.data").joinpath("registries_seed.json")) as seed:
+            await registries.load_seed(seed)
+        c = await _make_ctx(tmp_path, registries=registries)
+        async with c:
+            hit = _hit(director_name="УЧЕБНАЯ ЗАПИСЬ", raw={"director_inn": "000000000000"})
+            result = await check_mass_director(c, hit)
+        assert result.flag is None
+        assert result.error is not None
+        assert result.error.error == "registry_unavailable"
+
+    async def test_training_sample_keeps_overall_unknown(self, tmp_path):
+        registries = RegistryStore(tmp_path / "seed.sqlite")
+        await registries.init()
+        from importlib.resources import as_file, files
+
+        with as_file(files("atomno_mcp_fns_check.data").joinpath("registries_seed.json")) as seed:
+            await registries.load_seed(seed)
+        c = await _make_ctx(tmp_path, registries=registries)
+        async with c:
+            clean = {
+                "rows": [
+                    {
+                        "i": INN,
+                        "o": "1027700132195",
+                        "n": "ООО Чистая",
+                        "k": "ul",
+                        "a": "TRAINING-SAMPLE, г Тестоград, ул Учебная, д 1",
+                        "g": "УЧЕБНАЯ ЗАПИСЬ",
+                    }
+                ]
+            }
+            with respx.mock() as m:
+                _mock_egrul(m, clean)
+                m.get(EFRSB_URL).mock(return_value=httpx.Response(200, json={"pageData": []}))
+                mock_disqualified_clean(m)
+                report = await check_for_red_flags(
+                    c, INN, address="TRAINING-SAMPLE, г Тестоград, ул Учебная, д 1"
+                )
+        error_codes = {e.code for e in report.errors}
+        assert "mass_address" in error_codes
+        assert "mass_director" in error_codes
+        assert "mass_address" not in report.checks_passed
+        assert report.flags == []
+        assert report.overall_risk_level == "unknown"
+
     async def test_empty_registry_never_lands_in_checks_passed(self, empty_ctx):
         """Главное свойство: пустой реестр не даёт «проверка пройдена»."""
         clean = {

@@ -6,6 +6,13 @@
 
 ## [Unreleased]
 
+## [0.1.12] — 2026-09-04
+
+### Changed
+
+- Проверки массового адреса и массового руководителя выполняются только по загруженной выгрузке ФНС. Пока выгрузки нет, проверка отвечает «не выполнена» и не снижает общий уровень риска.
+- Если путь к кэшу задан переменной окружения, домашний каталог пользователя больше не создаётся при старте.
+
 ## [0.1.11] — 2026-09-04
 
 ### Fixed
@@ -123,7 +130,8 @@
 
 ---
 
-[Unreleased]: https://github.com/atomno-mcp/mcp-fns-check/compare/v0.1.11...HEAD
+[Unreleased]: https://github.com/atomno-mcp/mcp-fns-check/compare/v0.1.12...HEAD
+[0.1.12]: https://github.com/atomno-mcp/mcp-fns-check/releases/tag/v0.1.12
 [0.1.11]: https://github.com/atomno-mcp/mcp-fns-check/releases/tag/v0.1.11
 [0.1.10]: https://github.com/atomno-mcp/mcp-fns-check/releases/tag/v0.1.10
 [0.1.1]: https://github.com/atomno-mcp/mcp-fns-check/releases/tag/v0.1.1

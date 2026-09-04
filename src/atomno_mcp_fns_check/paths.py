@@ -21,3 +21,15 @@ def user_data_dir(*, app: str = "atomno") -> Path:
 
 def default_cache_db_path() -> Path:
     return user_data_dir() / CACHE_FILENAME
+
+
+def resolve_cache_db_path() -> str:
+    """Путь к кэшу: переменная окружения, иначе каталог данных пользователя.
+
+    Если задан ``MCP_FNS_CACHE_DB``, домашний каталог не создаём — на боевом
+    сервере домашний каталог службы часто недоступен для записи.
+    """
+    override = os.environ.get("MCP_FNS_CACHE_DB")
+    if override:
+        return override
+    return str(default_cache_db_path())

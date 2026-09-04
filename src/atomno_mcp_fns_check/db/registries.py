@@ -193,6 +193,9 @@ class RegistryStatus:
     source_url: str | None
     age_days: int | None
     stale_after_days: int
+    #: Учебный набор из поставки, не выгрузка ФНС. По такому набору
+    #: нельзя ни подтвердить риск, ни снять его.
+    is_training_sample: bool = False
 
     @property
     def is_empty(self) -> bool:
@@ -200,7 +203,7 @@ class RegistryStatus:
 
     @property
     def is_stale(self) -> bool:
-        if self.rows == 0:
+        if self.rows == 0 or self.is_training_sample:
             return False
         if self.age_days is None:
             return True
@@ -208,7 +211,7 @@ class RegistryStatus:
 
     @property
     def is_usable(self) -> bool:
-        return not self.is_empty and not self.is_stale
+        return not self.is_empty and not self.is_stale and not self.is_training_sample
 
     @property
     def data_as_of_ru(self) -> str:
@@ -359,6 +362,12 @@ class RegistryStore:
                 reference = today or datetime.now(tz=timezone.utc).date()
                 age_days = (reference - as_of).days
 
+        dataset = await self.get_meta("dataset")
+        seed_version = await self.get_meta("seed_version")
+        is_training_sample = loaded_at is None and (
+            dataset == "demo" or seed_version is not None
+        )
+
         return RegistryStatus(
             name=registry,
             rows=rows,
@@ -367,6 +376,7 @@ class RegistryStore:
             source_url=source_url,
             age_days=age_days,
             stale_after_days=STALE_AFTER_DAYS.get(registry, 400),
+            is_training_sample=is_training_sample,
         )
 
     async def record_load(
@@ -789,9 +799,11 @@ class RegistryStore:
     # --- bulk seeding from JSON ---
 
     async def load_seed(self, seed_path: Path | str) -> dict[str, int]:
-        """Загрузить bundled-сидинг (data/registries_seed.json) в реестры.
+        """Загрузить учебный набор (data/registries_seed.json) в реестры.
 
-        Возвращает количество загруженных записей по каждому реестру.
+        Набор помечен как ``dataset=demo`` и **не годится для вывода**.
+        Проверки риска обязаны спросить ``registry_status()`` и вернуть
+        «не выполнена», а не совпадение по учебным строкам.
         """
         path = Path(seed_path)
         with path.open(encoding="utf-8") as f:
@@ -799,5 +811,7 @@ class RegistryStore:
         ma = await self.upsert_mass_addresses(data.get("mass_addresses", []))
         md = await self.upsert_mass_directors(data.get("mass_directors", []))
         dq = await self.upsert_disqualified(data.get("disqualified_directors", []))
-        await self.set_meta("seed_version", str(data.get("_meta", {}).get("version", "1")))
+        meta = data.get("_meta") or {}
+        await self.set_meta("seed_version", str(meta.get("version", "demo-0")))
+        await self.set_meta("dataset", "demo")
         return {"mass_addresses": ma, "mass_directors": md, "disqualified_directors": dq}

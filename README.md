@@ -202,9 +202,9 @@ claude mcp add fns-check atomno-mcp-fns-check
 
 ## Локальные реестры ФНС
 
-Реестры массовых адресов / руководителей / дисквалифицированных лиц — это CSV/XML-выгрузки Open Data ФНС. Пакет идёт со встроенным мини-сидом (`registries_seed.json`, синтетические тестовые записи) — его достаточно, чтобы тулзы работали «из коробки» и показывали флаги на тестовых ИНН.
+Реестры массовых адресов / руководителей — это CSV-выгрузки открытых данных ФНС. Без загруженной выгрузки эти проверки отвечают «не выполнена» и не влияют на вердикт так, будто источник ответил. В поставке есть учебный файл `registries_seed.json` **только для тестов**; сервер его в рабочую базу не подгружает.
 
-Для production-проверок обновите реестры полными срезами через CLI `atomno-mcp-fns-etl`:
+Для рабочих проверок загрузите срезы через CLI `atomno-mcp-fns-etl`:
 
 ```bash
 atomno-mcp-fns-etl --registry mass_addresses --source ./fns_open_data/ulm.csv --commit
@@ -214,8 +214,8 @@ atomno-mcp-fns-etl --registry disqualified --source ./fns_open_data/disqualified
 
 Источники Open Data:
 
-- `mass_addresses` → [nalog.gov.ru/opendata/7707329152-massreg/](https://www.nalog.gov.ru/opendata/7707329152-massreg/)
-- `mass_directors` → [nalog.gov.ru/opendata/7707329152-massuchredt/](https://www.nalog.gov.ru/opendata/7707329152-massuchredt/)
+- `mass_addresses` → [nalog.gov.ru/opendata/7707329152-masaddress/](https://www.nalog.gov.ru/opendata/7707329152-masaddress/)
+- `mass_directors` → [nalog.gov.ru/opendata/7707329152-massleaders/](https://www.nalog.gov.ru/opendata/7707329152-massleaders/)
 - `disqualified` → [service.nalog.ru/disqualified.do](https://service.nalog.ru/disqualified.do)
 
 По умолчанию CLI работает в `--dry-run` (парсит и печатает sample); для записи нужен явный `--commit`. Meta-поля `<registry>.last_etl`, `<registry>.last_etl_source`, `<registry>.last_etl_count` сохраняются автоматически — используйте их для cron-мониторинга свежести данных.

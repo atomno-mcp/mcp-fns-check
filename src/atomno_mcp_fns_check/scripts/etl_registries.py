@@ -706,7 +706,10 @@ async def print_status(db_path: Path) -> int:
     unusable = 0
     for registry in ("mass_addresses", "mass_directors", "disqualified_entities", "tax_debts"):
         st = await store.registry_status(registry)
-        if st.is_empty:
+        if st.is_training_sample:
+            state = "учебный набор — проверка отвечает «не проверено»"
+            unusable += 1
+        elif st.is_empty:
             state = "не загружен — проверка отвечает «не проверено»"
             unusable += 1
         elif st.is_stale:
@@ -898,7 +901,10 @@ def main(argv: list[str] | None = None) -> int:
             total += _process_dataset(spec, args)
         elapsed = (datetime.now(tz=timezone.utc) - started).total_seconds()
         print(f"\nИТОГО записано строк: {total}; заняло {elapsed:.0f} с")
-        return asyncio.run(print_status(db))
+        # Печатаем состояние, но не валим успешную загрузку из-за устаревших
+        # наборов: ФНС по части реестров не публикует свежие файлы с 2021 года.
+        asyncio.run(print_status(db))
+        return 0
 
     if not args.registry and not args.dataset:
         print("ERROR: укажите --registry/--dataset, либо --all, либо --status", file=sys.stderr)

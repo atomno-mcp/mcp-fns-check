@@ -26,7 +26,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import atexit
-import importlib.resources as importlib_resources
 import logging
 import os
 from typing import Any
@@ -36,7 +35,7 @@ from fastmcp import FastMCP
 from . import __version__
 from .context import ServiceContext
 from .errors import McpFnsError
-from .paths import default_cache_db_path
+from .paths import resolve_cache_db_path
 from .tools import check_contractor as _check_contractor_impl
 from .tools import check_for_red_flags as _check_for_red_flags_impl
 from .tools import check_individual_bankruptcy as _check_individual_bankruptcy_impl
@@ -77,31 +76,10 @@ async def _get_ctx() -> ServiceContext:
         if _ctx is None:
             ctx = ServiceContext.from_env()
             await ctx.__aenter__()
-            await _maybe_seed_registries(ctx)
             _ctx = ctx
             atexit.register(_close_ctx_atexit)
     assert _ctx is not None
     return _ctx
-
-
-async def _maybe_seed_registries(ctx: ServiceContext) -> None:
-    """Если реестры пусты, подгрузить bundled-сидинг.
-
-    На стадии S3 это синтетический мини-набор. На S4 заменится на полноценный
-    ETL из data.nalog.ru, который перезаписывает таблицы целиком.
-    """
-    if ctx.registries is None:
-        return
-    if await ctx.registries.get_meta("seed_version") is not None:
-        return
-    try:
-        with importlib_resources.as_file(
-            importlib_resources.files("atomno_mcp_fns_check.data").joinpath("registries_seed.json")
-        ) as seed_path:
-            counts = await ctx.registries.load_seed(seed_path)
-        logger.info("registries seeded: %s", counts)
-    except Exception as exc:  # pragma: no cover - best-effort
-        logger.warning("registries seed skipped: %s", exc)
 
 
 def _close_ctx_atexit() -> None:
@@ -371,7 +349,7 @@ async def check_individual_bankruptcy(
 
 
 def _cache_db_path() -> str:
-    return os.environ.get("MCP_FNS_CACHE_DB", str(default_cache_db_path()))
+    return resolve_cache_db_path()
 
 
 # Список транспортов FastMCP, которые мы допускаем в публичном CLI. Он

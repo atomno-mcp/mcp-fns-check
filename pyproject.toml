@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "atomno-mcp-fns-check"
-version = "0.1.11"
+version = "0.1.12"
 description = "MCP server for checking RU counterparties via FNS open data (EGRUL/EGRIP, EFRSB, KAD, FSSP)."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -49,7 +49,7 @@ dependencies = [
   "httpx>=0.27.0,<1.0.0",
   "pydantic>=2.6.0,<3.0.0",
   "aiosqlite>=0.20.0,<1.0.0",
-  "python-dateutil>=2.9.0",
+  "python-dateutil>=2.9.0,<3.0.0",
 ]
 
 [project.urls]
@@ -78,6 +78,7 @@ atomno-mcp-fns-etl = "atomno_mcp_fns_check.scripts.etl_registries:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/atomno_mcp_fns_check"]
+include = ["src/atomno_mcp_fns_check/py.typed"]
 
 [tool.hatch.build.targets.sdist]
 include = [

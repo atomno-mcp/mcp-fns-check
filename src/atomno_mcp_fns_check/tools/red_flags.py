@@ -95,6 +95,39 @@ def _registry_empty_error(code: FlagCode, registry_label_ru: str) -> CheckError:
     )
 
 
+def _registry_unavailable_error(code: FlagCode, registry_label_ru: str) -> CheckError:
+    """В базе лежит учебный набор, а не официальная выгрузка ФНС.
+
+    Совпадение по учебным строкам нельзя выдавать как риск: это не данные
+    налоговой. Тот же канал, что пустой/устаревший реестр — `errors[]`.
+    """
+    return CheckError(
+        code=code,
+        error="registry_unavailable",
+        message_ru=(
+            f"Официальная выгрузка реестра {registry_label_ru} ФНС не загружена. "
+            "Проверка не выполнялась: риск не подтверждён и не исключён."
+        ),
+    )
+
+
+async def _registry_source_gate(
+    ctx: ServiceContext, code: FlagCode, registry: str, label_ru: str
+) -> _CheckResult | None:
+    """Отказ до поиска, если источника нет. None — можно искать.
+
+    Учебный набор и пустая таблица не должны доходить до lookup: иначе
+    совпадение по учебной строке выглядело бы как настоящий риск.
+    """
+    assert ctx.registries is not None  # noqa: S101 — вызывается только после проверки
+    status = await ctx.registries.registry_status(registry)
+    if status.is_training_sample:
+        return _CheckResult(code, None, None, _registry_unavailable_error(code, label_ru))
+    if status.is_empty:
+        return _CheckResult(code, None, None, _registry_empty_error(code, label_ru))
+    return None
+
+
 def _registry_stale_error(
     code: FlagCode, registry_label_ru: str, status: RegistryStatus
 ) -> CheckError:
@@ -158,6 +191,10 @@ async def check_mass_address(
     if ctx.registries is None:
         return _CheckResult(code, None, "Реестр массовых адресов не подключён.", None)
 
+    gated = await _registry_source_gate(ctx, code, "mass_addresses", "массовых адресов")
+    if gated is not None:
+        return gated
+
     lookup_address = (address or hit.address or "").strip()
     if not lookup_address:
         # Поиск ЕГРЮЛ (`egrul.nalog.ru/search-result`) отдаёт только регион,
@@ -209,6 +246,12 @@ async def check_mass_director(ctx: ServiceContext, hit: EgrulSearchHit) -> _Chec
     code: FlagCode = "mass_director"
     if ctx.registries is None:
         return _CheckResult(code, None, "Реестр массовых руководителей не подключён.", None)
+
+    gated = await _registry_source_gate(
+        ctx, code, "mass_directors", "массовых руководителей и учредителей"
+    )
+    if gated is not None:
+        return gated
 
     director_inn: str | None = None
     raw = hit.raw or {}
@@ -396,6 +439,11 @@ async def check_tax_debts(ctx: ServiceContext, hit: EgrulSearchHit) -> _CheckRes
     code: FlagCode = "tax_debts"
     if ctx.registries is None:
         return _CheckResult(code, None, "Реестр налоговой задолженности не подключён.", None)
+    gated = await _registry_source_gate(
+        ctx, code, "tax_debts", "налоговой задолженности (debtam)"
+    )
+    if gated is not None:
+        return gated
     if not hit.inn:
         return _CheckResult(code, None, "ИНН контрагента не определён.", None)
 

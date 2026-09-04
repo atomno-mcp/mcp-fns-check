@@ -146,6 +146,19 @@ class TestSeed:
         assert counts["mass_directors"] >= 1
         assert counts["disqualified_directors"] >= 1
         assert await store.get_meta("seed_version") is not None
+        assert await store.get_meta("dataset") == "demo"
+        status = await store.registry_status("mass_addresses")
+        assert status.is_training_sample
+        assert not status.is_usable
+
+        await store.record_load(
+            "mass_addresses",
+            rows=status.rows,
+            data_as_of="2026-09-01",
+            source_url="https://file.nalog.ru/opendata/masaddress.csv",
+        )
+        after_etl = await store.registry_status("mass_addresses")
+        assert after_etl.is_training_sample is False
 
 
 class TestMeta:

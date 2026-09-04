@@ -10,6 +10,7 @@ from __future__ import annotations
 import pytest
 
 from atomno_mcp_fns_check import __version__
+from atomno_mcp_fns_check import server as server_module
 from atomno_mcp_fns_check.server import (
     _DEFAULT_HTTP_HOST,
     _DEFAULT_HTTP_PORT,
@@ -18,6 +19,11 @@ from atomno_mcp_fns_check.server import (
     _resolve_log_level,
     main,
 )
+
+
+class TestNoAutoloadTrainingSample:
+    def test_startup_does_not_load_training_file(self) -> None:
+        assert not hasattr(server_module, "_maybe_seed_registries")
 
 
 class TestHelp:
